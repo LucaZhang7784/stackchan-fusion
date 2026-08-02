@@ -1,4 +1,4 @@
-# StackChan Fusion — 音声で動かすデスクトップロボット × ローカルAIエージェント
+﻿# StackChan Fusion — 音声で動かすデスクトップロボット × ローカルAIエージェント
 
 > **English**: [README.en.md](README.en.md) · **中文版**: [README.md](README.md)
 
@@ -108,7 +108,7 @@ docker mcp client connect claude-code --global --profile stackchan
 
 ## Acknowledgements（謝辞）
 
-- [Stackchan-HtSz](https://github.com/LucaZhang7784/Stackchan-HtSz) by [LucaZhang7784](https://github.com/LucaZhang7784)
+- [Stackchan-HtSz](https://github.com/mo-hantang/Stackchan-HtSz) by [mo-hantang](https://github.com/mo-hantang)
 - [xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) by [xinnan-tech](https://github.com/xinnan-tech)
 - [StackChan](https://github.com/hylarucoder/StackChan) by [hylarucoder](https://github.com/hylarucoder)
 - [stackchan-xiaozhi-firmware](https://github.com/heavenchenggong/stackchan-xiaozhi-firmware) by [heavenchenggong](https://github.com/heavenchenggong)

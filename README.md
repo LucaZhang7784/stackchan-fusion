@@ -1,4 +1,6 @@
-﻿# StackChan 融合方案 — fusion.firmware.0731
+﻿# StackChan 融合方案 — fusion.firmware.0731
+
+> **English**: [README.en.md](README.en.md) · **日本語**: [README.ja.md](README.ja.md)
 
 日期: 2026-08-01
 范围: 把「xiaozhi.me 云智能体 + Tailscale」与「stackchan 机器人工具能力」融合,
@@ -360,3 +362,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pc\gateway\install_autosta
 - [ ] 全局搜索 `YOUR_` 占位符均已替换为真实值
 - [ ] 不要把 `.env` / `config.json` / `*.log` 加入 git(见 .gitignore)
 - [ ] 推送前用 `git diff --cached` 复查没有意外提交密钥
+
+---
+
+## 十一、致谢 (Acknowledgements)
+
+本项目站在以下开源项目与服务的肩膀上, 向作者们致敬:
+
+| 项目 | 作者 | 用途 |
+|---|---|---|
+| [xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) | [xinnan-tech](https://github.com/xinnan-tech) | xiaozhi 协议服务器(SERVER_MCP / 推送补丁的基础) |
+| [StackChan](https://github.com/hylarucoder/StackChan) | [hylarucoder](https://github.com/hylarucoder) | StackChan 固件改造参考(舵机/摄像头/唤醒词) |
+| [stackchan-xiaozhi-firmware](https://github.com/heavenchenggong/stackchan-xiaozhi-firmware) | [heavenchenggong](https://github.com/heavenchenggong) | 本机固件的基础版本(唤醒词 + Servo MCP + 长期在线) |
+| [stackchan-claude-bridge](https://github.com/heavenchenggong/stackchan-claude-bridge) | [heavenchenggong](https://github.com/heavenchenggong) | 机器人 ↔ Claude Code 桥接架构参考 |
+| [stackchan-mcp](https://github.com/migratorywhale/stackchan-mcp) | [migratorywhale](https://github.com/migratorywhale) | 机器人 MCP 工具能力研究 |
+| [mcp-calculator](https://github.com/78/mcp-calculator) | [78](https://github.com/78) | MCP Server 示例(接入 xiaozhi.me 接入点) |
+| [xiaozhi.me](https://xiaozhi.me) | xiaozhi 团队 | 云端智能体平台 / MCP 接入点 |
+
+再次感谢以上项目的作者与社区。
+
+> 免责声明: 本仓库仅为个人实验项目, 与本项目引用作者无任何隶属关系。
+
+---
+
+## 十二、关键词 Keywords キーワード
+
+**中文**: 桌面机器人 · 语音助手 · 大模型 · MCP · 智能体 · 双向通话 · ESP32 · M5Stack · 小智 · Codex · Claude Code · 物联网 · 树莓派(可选)
+
+**English**: stackchan · m5stack · esp32 · xiaozhi · mcp · model-context-protocol · ai-agent · claude-code · codex · voice-assistant · iot · robot · llm
+
+**日本語**: スタックチャン · デスクトップロボット · 音声アシスタント · LLM · MCP · エージェント · ESP32 · M5Stack · 小智 · Codex · Claude Code · IoT · ロボット

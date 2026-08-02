@@ -1,0 +1,17 @@
+{
+  "ota_url": "https://YOUR_FUNNEL_DOMAIN.ts.net/xiaozhi/ota/",
+  "robot_mac": "AA:BB:CC:DD:EE:FF",
+  "endpoint_health_url": "http://127.0.0.1:8004/mcp_endpoint/health?key=YOUR_HEALTH_KEY",
+  "docker_container": "xiaozhi-esp32-server",
+  "docker_log_lookback_minutes": 120,
+  "auth_token": "YOUR_GATEWAY_TOKEN",
+  "allow_codex": true,
+  "allow_claude": true,
+  "codex_cli": "codex",
+  "claude_cli": "claude",
+  "exec_cwd": "D:\\ProcessCenter\\StackChan\\fusion.firmware.0731\\gateway",
+  "max_output_chars": 4000,
+  "max_timeout_s": 600,
+  "http_host": "0.0.0.0",
+  "http_port": 8010
+}

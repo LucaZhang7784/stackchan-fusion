@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "xiaozhi-cloud-bridge": {
+      "command": "python",
+      "args": ["<PROJECT_DIR>/xiaozhi-mcp/server.py"]
+    }
+  }
+}

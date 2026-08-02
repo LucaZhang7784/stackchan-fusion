@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "id": "stackchan",
+  "name": "stackchan",
+  "servers": [
+    {
+      "type": "remote",
+      "secrets": "default",
+      "tools": null,
+      "endpoint": "http://localhost:8010/mcp",
+      "snapshot": {
+        "server": {
+          "name": "fusion-gateway",
+          "type": "remote",
+          "image": "",
+          "description": "Local bridge to agy/pi/claude/codex agents and the StackChan robot (agent_status/agent_query/agent_pending/agent_confirm, robot_say/robot_pending).",
+          "title": "StackChan Fusion Gateway",
+          "remote": {
+            "url": "http://localhost:8010/mcp",
+            "transport_type": "streamable-http",
+            "headers": {
+              "Authorization": "Bearer YOUR_GATEWAY_TOKEN"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "secrets": {
+    "default": {
+      "provider": "docker-desktop-store"
+    }
+  }
+}

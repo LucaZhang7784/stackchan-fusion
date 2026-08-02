@@ -1,0 +1,22 @@
+# 敏感/运行时文件 - 绝不提交
+.env
+config.json
+*.log
+*.err
+*.pid
+heartbeat.json
+pending.jsonl
+outbox/
+state/
+data/
+__pycache__/
+*.pyc
+
+# 构建产物/备份
+package-stackchan/
+package-stackchan.zip
+backup-*/
+
+# IDE
+.vscode/
+.idea/

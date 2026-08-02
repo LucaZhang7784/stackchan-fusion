@@ -371,6 +371,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pc\gateway\install_autosta
 
 | 项目 | 作者 | 用途 |
 |---|---|---|
+| [Stackchan-HtSz](https://github.com/LucaZhang7784/Stackchan-HtSz) | [LucaZhang7784](https://github.com/LucaZhang7784) | 本机 HtSz 固件的基础(自定义栈/舵机控制) |
 | [xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) | [xinnan-tech](https://github.com/xinnan-tech) | xiaozhi 协议服务器(SERVER_MCP / 推送补丁的基础) |
 | [StackChan](https://github.com/hylarucoder/StackChan) | [hylarucoder](https://github.com/hylarucoder) | StackChan 固件改造参考(舵机/摄像头/唤醒词) |
 | [stackchan-xiaozhi-firmware](https://github.com/heavenchenggong/stackchan-xiaozhi-firmware) | [heavenchenggong](https://github.com/heavenchenggong) | 本机固件的基础版本(唤醒词 + Servo MCP + 长期在线) |

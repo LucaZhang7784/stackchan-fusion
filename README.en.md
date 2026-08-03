@@ -84,7 +84,7 @@ robot announces the result after wake-up.
 | Agent | Integration | Active reporting | Voice write-back |
 |---|---|---|---|
 | codex | `~/.codex/hooks.json` → `agents/codex_hook.py`; `config.toml` `bypass_hook_trust=true`, `[windows] sandbox='unelevated'` | ✅ desktop + CLI | ❌ (confirm in the codex UI) |
-| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`; `agents/confirm_mcp.py` | ✅ | ✅ full loop |
+| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`; visible-window runs report completion via `agents/claude_visible_run.py`; `agents/confirm_mcp.py` | ✅ | ✅ full loop |
 | agy / Antigravity | `~/.gemini/config/hooks.json` `fusion` block → `agents/antigravity_hook.py` | ✅ CLI as agent=agy | ❌ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → gateway | ✅ | ❌ |
 
@@ -114,7 +114,7 @@ agent's hooks and announced by the robot after wake-up.
 | xiaozhi-esp32-server (Docker) | 8000/8003 | backup link |
 | mcp-endpoint-server (Docker) | 8004 | backup-link MCP endpoint |
 | funnel_proxy.py | 8090 | backup route (auto-start + 5-min self-heal) |
-| System tray | — | status monitor + gateway watchdog (single-instance guard) |
+| System tray | — | status monitor + gateway watchdog (single-instance guard) + queue-ops menu (view/clear) |
 
 Watchdog and scheduled tasks all launch via `wscript.exe` + VBS hidden
 launchers (no flashing windows); `install_autostart.ps1` registers them.

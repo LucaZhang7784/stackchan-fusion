@@ -15,7 +15,7 @@ try {
     $cfg = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
     $authToken = $cfg.auth_token
 } catch { }
-if (-not $authToken) { $authToken = 'YOUR_GATEWAY_TOKEN' }
+if (-not $authToken) { $authToken = 'f5c9a1e0-2b7d-4f3e-9a8b-6c4d2e1f0a3b' }
 
 $bridgeErr = 'D:\ProcessCenter\StackChan\fusion.firmware.0731\xiaozhi-mcp\bridge.err'
 $eventsFile = Join-Path $root 'data\agent_events.jsonl'
@@ -122,6 +122,71 @@ function Get-QueueInfo {
         } catch { }
     }
     return @($events.Count, $confirm, ($events.Count + $confirm), $summary)
+}
+
+# ---------------------------------------------------------------- 队列操作
+function Get-QueueItems {
+    # 返回 (事件条目[], 推送条目[])
+    $evs = @()
+    if (Test-Path -LiteralPath $eventsFile) {
+        $evs = @(Get-Content -LiteralPath $eventsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | ForEach-Object {
+            try { $o = $_ | ConvertFrom-Json; "[$($o.ts)] $($o.agent) $($o.type): $($o.summary)" } catch { $_ }
+        })
+    }
+    $pus = @()
+    $pendingFile = Join-Path $root 'state\pending.jsonl'
+    if (Test-Path -LiteralPath $pendingFile) {
+        $pus = @(Get-Content -LiteralPath $pendingFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | ForEach-Object {
+            try { $o = $_ | ConvertFrom-Json; "[$($o.created_at)] $($o.text)" } catch { $_ }
+        })
+    }
+    return ,$evs, $pus
+}
+
+function Show-QueueMessages {
+    $evs, $pus = Get-QueueItems
+    $lines = @()
+    if ($evs.Count) { $lines += '===== 待播报事件 (agent_events) ====='; $lines += $evs }
+    if ($pus.Count) {
+        if ($lines.Count) { $lines += '' }
+        $lines += '===== 推送队列 (pending, 自建链路用) ====='; $lines += $pus
+    }
+    if (-not $lines.Count) { $lines = '(队列为空)' }
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'StackChan 队列消息'
+    $form.Size = New-Object System.Drawing.Size(720, 500)
+    $form.StartPosition = 'CenterScreen'
+    $form.TopMost = $true
+    $txt = New-Object System.Windows.Forms.TextBox
+    $txt.Multiline = $true
+    $txt.ReadOnly = $true
+    $txt.ScrollBars = 'Vertical'
+    $txt.Dock = 'Fill'
+    $txt.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9)
+    $txt.Text = ($lines -join "`r`n")
+    $form.Controls.Add($txt)
+    $form.ShowDialog() | Out-Null
+}
+
+function Clear-QueueData {
+    # 清空事件队列 + 推送队列(无 BOM 写入, 避免破坏 JSONL); 待确认问题保留。
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $backup = Join-Path $root "state\queue-clear-$stamp.jsonl"
+    $all = @()
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    if (Test-Path -LiteralPath $eventsFile) {
+        $all += Get-Content -LiteralPath $eventsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }
+        [System.IO.File]::WriteAllText($eventsFile, '', $utf8)
+    }
+    $pendingFile = Join-Path $root 'state\pending.jsonl'
+    if (Test-Path -LiteralPath $pendingFile) {
+        $all += Get-Content -LiteralPath $pendingFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }
+        [System.IO.File]::WriteAllText($pendingFile, '', $utf8)
+    }
+    if ($all.Count) { [System.IO.File]::WriteAllLines($backup, $all, $utf8) }
+    [System.Windows.Forms.MessageBox]::Show(
+        "已清空队列($($all.Count) 条)。备份: $(Split-Path $backup -Leaf)",
+        '清空队列', 'OK', 'Information') | Out-Null
 }
 
 # 托盘内置守护: 网关离线时静默拉起(防抖 30s)
@@ -251,6 +316,38 @@ function Build-Menu {
     Add-StatusItem $msgMenu "待确认问题:" "$confirm 个" $(if($confirm -gt 0){'bad'}else{'ok'})
     if ($queue[3]) { Add-StatusItem $msgMenu "最近事件:" "$($queue[3])" '' }
     $menu.DropDownItems.Add($msgMenu) | Out-Null
+
+    # 队列操作子菜单
+    $queueMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+    $queueMenu.Text = "队列操作  ($($queue[2]) 条)"
+    $itemShowQueue = New-Object System.Windows.Forms.ToolStripMenuItem
+    $itemShowQueue.Text = '显示队列消息内容...'
+    $itemShowQueue.Add_Click({ Show-QueueMessages }) | Out-Null
+    $queueMenu.DropDownItems.Add($itemShowQueue) | Out-Null
+    $itemClearQueue = New-Object System.Windows.Forms.ToolStripMenuItem
+    $itemClearQueue.Text = '清空队列'
+    $itemClearQueue.Add_Click({
+        $r = [System.Windows.Forms.MessageBox]::Show(
+            '确定清空待播报队列(事件 + 推送队列)？待确认问题保留。', '清空队列', 'YesNo', 'Warning')
+        if ($r -eq 'Yes') { Clear-QueueData }
+    }) | Out-Null
+    $queueMenu.DropDownItems.Add($itemClearQueue) | Out-Null
+    $itemClearConfirm = New-Object System.Windows.Forms.ToolStripMenuItem
+    $itemClearConfirm.Text = '清空待确认问题'
+    $itemClearConfirm.Add_Click({
+        $r = [System.Windows.Forms.MessageBox]::Show(
+            '确定把所有未回答的 agent 待确认问题标记为已清理？', '清空待确认', 'YesNo', 'Warning')
+        if ($r -eq 'Yes') {
+            if (Test-Path -LiteralPath $confirmFile) {
+                $items = Get-Content -Raw -LiteralPath $confirmFile | ConvertFrom-Json
+                foreach ($c in $items) { if (-not $c.answered) { $c.answered = $true; $c.answer = 'cleared-from-tray' } }
+                $items | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $confirmFile -Encoding UTF8
+            }
+            [System.Windows.Forms.MessageBox]::Show('待确认问题已清空。', '清空待确认', 'OK', 'Information') | Out-Null
+        }
+    }) | Out-Null
+    $queueMenu.DropDownItems.Add($itemClearConfirm) | Out-Null
+    $menu.DropDownItems.Add($queueMenu) | Out-Null
 
     $menu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 

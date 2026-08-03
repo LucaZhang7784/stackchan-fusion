@@ -157,6 +157,23 @@ launchers (no flashing windows); `install_autostart.ps1` registers them.
 
 Older: `firmware/post-fw-v1.0.0-led` (verified 07.31 build, can roll back).
 
+## References & Acknowledgments
+
+This project references / uses the following open-source projects. Thanks to all authors:
+
+| Project | Author | Used for |
+|---|---|---|
+| [xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) | @xinnan-tech | self-hosted xiaozhi server (backup link) |
+| [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) | @78 | device firmware upstream |
+| [stackchan-claude-bridge](https://github.com/heavenchenggong/stackchan-claude-bridge) | @heavenchenggong | StackChan × Claude bridge firmware (source of the verified 07.31 base) |
+| [StackChan-HtSz](https://github.com/mo-hantang/StackChan-HtSz) | @mo-hantang | StackChan-HtSz firmware (main branch) |
+| [StackChan](https://github.com/hylarucoder/StackChan) | @hylarucoder | StackChan reference (servo/actions/LED) |
+| [stackchan-mcp](https://github.com/migratorywhale/stackchan-mcp) | @migratorywhale | StackChan × MCP reference |
+| [pi-coding-agent](https://github.com/earendil-works/pi-coding-agent) | @earendil-works | pi coding agent |
+| [mcp-calculator](https://github.com/78/mcp-calculator) | @78 | MCP tool authoring example |
+
+Plus the official AI agent products: OpenAI Codex, Anthropic Claude Code, Google Antigravity (Gemini CLI).
+
 ## Sensitive Information
 
 This repository contains **no real credentials**: tokens / API keys / MAC /

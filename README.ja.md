@@ -154,6 +154,25 @@ python scripts\verify_connectivity.py
 
 旧版：`firmware/post-fw-v1.0.0-led`（検証済み 07.31 ビルド、ロールバック可）。
 
+## 参考プロジェクトと謝辞
+
+本ソリューションは以下のオープンソースプロジェクトを参照・利用しています。
+各作者に感謝します。
+
+| プロジェクト | 作者 | 用途 |
+|---|---|---|
+| [xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) | @xinnan-tech | 自前 xiaozhi サーバー（予備リンク） |
+| [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) | @78 | デバイスファームウェアの上流 |
+| [stackchan-claude-bridge](https://github.com/heavenchenggong/stackchan-claude-bridge) | @heavenchenggong | StackChan × Claude ブリッジファームウェア（検証済み 07.31 ベースの出所） |
+| [StackChan-HtSz](https://github.com/mo-hantang/StackChan-HtSz) | @mo-hantang | StackChan-HtSz ファームウェア（メインブランチ） |
+| [StackChan](https://github.com/hylarucoder/StackChan) | @hylarucoder | StackChan 参考実装（サーボ/動作/LED） |
+| [stackchan-mcp](https://github.com/migratorywhale/stackchan-mcp) | @migratorywhale | StackChan × MCP 参考 |
+| [pi-coding-agent](https://github.com/earendil-works/pi-coding-agent) | @earendil-works | pi コーディングエージェント |
+| [mcp-calculator](https://github.com/78/mcp-calculator) | @78 | MCP ツール作成のサンプル |
+
+また、各 AI エージェントの公式プロダクト：OpenAI Codex、Anthropic Claude Code、
+Google Antigravity（Gemini CLI）。
+
 ## 機密情報
 
 このリポジトリには**実際の認証情報は含まれていません**：トークン / API キー /

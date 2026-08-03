@@ -143,6 +143,23 @@ python scripts\verify_connectivity.py
 
 历史版本：`firmware/post-fw-v1.0.0-led`（07.31 跑通版，可回退）。
 
+## 参考项目与致谢
+
+本方案参考/使用了以下开源项目，感谢各位作者：
+
+| 项目 | 作者 | 用途 |
+|---|---|---|
+| [xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) | @xinnan-tech | 自建 xiaozhi 服务器（备用链路） |
+| [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) | @78 | 设备端固件上游 |
+| [stackchan-claude-bridge](https://github.com/heavenchenggong/stackchan-claude-bridge) | @heavenchenggong | StackChan × Claude 桥接固件（07.31 跑通基座来源） |
+| [StackChan-HtSz](https://github.com/mo-hantang/StackChan-HtSz) | @mo-hantang | StackChan-HtSz 固件（主分支） |
+| [StackChan](https://github.com/hylarucoder/StackChan) | @hylarucoder | StackChan 参考实现（舵机/动作/LED） |
+| [stackchan-mcp](https://github.com/migratorywhale/stackchan-mcp) | @migratorywhale | StackChan × MCP 参考 |
+| [pi-coding-agent](https://github.com/earendil-works/pi-coding-agent) | @earendil-works | pi 编程智能体 |
+| [mcp-calculator](https://github.com/78/mcp-calculator) | @78 | MCP 工具编写示例 |
+
+以及各 AI agent 官方产品：OpenAI Codex、Anthropic Claude Code、Google Antigravity（Gemini CLI）。
+
 ## 敏感信息
 
 本仓库**不含任何真实凭据**：token / API key / MAC / 域名均为占位符

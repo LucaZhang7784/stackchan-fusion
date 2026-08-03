@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
 GATEWAY_URL = "http://127.0.0.1:8010"
 AGENT = "claude"
+STATE_PATH = Path(__file__).resolve().parent.parent / "gateway" / "state" / "claude_hook.state.json"
 
 
 def _load_token() -> str:
@@ -55,18 +57,41 @@ def _summary_from_transcript(transcript: list) -> str:
     return ""
 
 
+def _recently_done(session_id: str, window_s: int = 120) -> bool:
+    """Stop 与 SessionEnd 会先后触发; 同一会话 120 秒内只上报一次 done。"""
+    if not session_id:
+        return False
+    now = time.time()
+    seen: dict = {}
+    try:
+        if STATE_PATH.exists():
+            seen = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        seen = {}
+    last = seen.get(session_id, 0)
+    seen[session_id] = now
+    try:
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(seen), encoding="utf-8")
+    except Exception:
+        pass
+    return (now - float(last)) < window_s
+
+
 if __name__ == "__main__":
     try:
-        data = json.loads(sys.stdin.read() or "{}")
+        raw = sys.stdin.buffer.read() if hasattr(sys.stdin, "buffer") else b""
+        data = json.loads(raw.decode("utf-8", "replace") or "{}")
     except Exception:
         sys.exit(0)
     hook = data.get("hook_event_name", "")
     session_id = data.get("session_id", "")
     if hook in ("Stop", "SessionEnd"):
-        summary = _summary_from_transcript(data.get("transcript", []))
-        if not summary:
-            summary = "任务已结束(无文本输出)"
-        _post("done", summary, session_id)
+        if not _recently_done(session_id):
+            summary = _summary_from_transcript(data.get("transcript", []))
+            if not summary:
+                summary = "任务已结束(无文本输出)"
+            _post("done", summary, session_id)
     elif hook == "Notification":
         msg = data.get("message", "")
         _post("progress", msg[:300], session_id)

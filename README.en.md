@@ -215,6 +215,47 @@ xiaozhi LLM ──tool call──► xiaozhi-mcp bridge (cloud) or fusion gatewa
   agent_pending aloud → user answers → LLM calls agent_confirm → answer written
   to reply_file → confirm_mcp returns allow/deny → claude continues
 
+### Antigravity Desktop confirmation announcements (2026-08-03)
+
+- `agents/antigravity_hook.py`: hooks client for the Antigravity Desktop language
+  server; POSTs "needs confirmation / task finished" events to the gateway
+  `/api/agent_event` (agent=antigravity).
+- Config: the `fusion` block in `~/.gemini/config/hooks.json` (replaces the dead
+  `stackchan` block). Registered events: `PreToolUse` (permission-sensitive tools:
+  run_command / write_file / apply_patch / web / MCP), `PermissionRequest` /
+  `PermissionDenied` / `Elicitation`, `Stop`.
+- Flow: Antigravity asks → hook reports → gateway queues "antigravity 需要确认: ..."
+  → the robot reads it aloud after wake-up via `agent_pending`; `Stop` →
+  "antigravity 任务完成".
+- Notes: restart Antigravity Desktop after editing hooks.json; the language
+  server does not support `UserPromptSubmit`; desktop permission dialogs have no
+  voice reply-back channel (confirm in the desktop UI; only claude has the full
+  confirmation loop).
+- Verify: make Antigravity run a command or write a file, then wake the robot and
+  ask "any messages".
+
+### Codex desktop/CLI, agy CLI and pi extension hooks (2026-08-03)
+
+- `agents/codex_hook.py` + `~/.codex/hooks.json`: reports Codex desktop & CLI
+  events (SessionStart / UserPromptSubmit / PermissionRequest / Notification /
+  Stop / SessionEnd) to the gateway. PermissionRequest → question (robot
+  announces "codex needs confirmation: …"); Stop/SessionEnd → done (last
+  assistant text as summary, deduped within 120 s per session).
+- Codex 0.146 does not run untrusted hooks by default: `~/.codex/config.toml`
+  now sets `bypass_hook_trust = true` (affects desktop); gateway-spawned codex
+  commands add `--dangerously-bypass-hook-trust` (CLI exec only honors this
+  flag). Restart Codex after changing config.
+- agy CLI reuses the `fusion` block in `~/.gemini/config/hooks.json`:
+  antigravity_hook.py attributes sessions whose artifactDirectoryPath contains
+  `antigravity-cli` to agent=agy (desktop stays agent=antigravity).
+- pi extension `~/.pi/agent/extensions/hooks-bridge.ts`: session_start/input →
+  progress, agent_end → done (last assistant text as summary); tools
+  speak/respond/move_head push via xiaozhi /api/push for immediate speech.
+- Verify: `codex exec --dangerously-bypass-hook-trust "只回复两个字：收到"` /
+  `agy --print "只回复两个字：收到"` / `pi --print "只回复两个字：收到"` —
+  check `gateway/state/codex_hook.log` or `gateway/data/agent_events.jsonl`
+  for the corresponding agent events.
+
 ### Usage
 
 ```powershell
@@ -223,6 +264,22 @@ python <PROJECT_DIR>\agents\claude_run.py "task description" "working dir"
 # install hooks for VS Code / terminal claude sessions
 powershell -ExecutionPolicy Bypass -File <PROJECT_DIR>\agents\install_claude_hooks.ps1
 ```
+
+### Visible-window execution (2026-08-03)
+
+- Robot-driven `agent_query` / `codex_query` / `claude_query` now execute in the
+  agent's own visible console window (titles: Codex-Asong / ClaudeCode-Asong /
+  Antigravity-Asong / pi-Asong); the run and its output stay visible until you
+  close the window.
+- Results flow back via each agent's hooks (see previous section) to the
+  gateway, and the robot reads them through agent_pending after wake-up.
+- codex sandbox fix: dropped `--sandbox workspace-write` (the local Windows
+  sandbox cannot spawn child processes — error 5 Access denied) in favor of the
+  global danger-full-access config.
+- Known boundary: internal sessions of the Codex/Antigravity desktop apps and
+  VS Code extension panels cannot be injected externally; robot tasks run in
+  the CLI windows, while desktop/VS Code plugin sessions still report events
+  via hooks (shared queue).
 
 ### Cloud STACK Agent Persona (already pasted into the xiaozhi.me console, wake word "A Song")
 
@@ -244,20 +301,33 @@ Tool rules:
 - Important: call each stage only once; ignore LED tool failures
 ```
 
-> Note: current firmware is an esp32-based modified version (wake word "A Song"
-> + LED status light); flash files in `firmware/` (merged-binary.bin + xiaozhi.bin).
+> Prompt v2 (wake-up-first rule: check agent_pending on every wake-up and read
+> messages one by one, then clear) — full text in `prompt-阿松-v2.md` (zh).
+
+> Note: current firmware is an esp32-based modified version v1.0.2-micfix
+> (built on the verified 07.31 base `reference/stackchan-xiaozhi-firmware`,
+> keeping wake word "A Song" + LED status light, only mic gain 30→42 to fix
+> poor speech recognition); flash files in `firmware/post-fw-v1.0.2-micfix/`
+> (app-only flash of xiaozhi.bin @ 0x410000, no erase/re-provision needed).
 
 ### Known Limitations
 
 - Cloud link has no push channel: agent events queue in the gateway, the robot
   reads them via agent_pending **after wake-up** (non-interruptive); the
   self-hosted link can push with robot_say.
-- Confirmation loop fully supports claude (permission-prompt-tool); agy/pi
-  headless queries work, interactive confirmation awaits their CLI support;
-  codex CLI queries work, confirmation mechanism awaits official support.
+- Local backup route kept: docker containers + Tailscale Funnel + funnel_proxy are
+  auto-started (scheduled task StackChan-FunnelProxyWatchdog: logon trigger +
+  5-minute self-heal). If the cloud link fails, point the robot at
+  https://YOUR_FUNNEL_DOMAIN.ts.net to use the local route (robot_say push).
+- Confirmation loop fully supports claude (permission-prompt-tool); Codex
+  desktop+CLI now have hooks (task start/done/needs-approval are reported;
+  permission confirmation still happens in the Codex UI); agy/pi headless
+  queries work, interactive confirmation awaits their CLI support.
 - pi must use `--no-context-files` and workdir=user home (some directories error
   "content is not iterable").
-- VS Code plugins: claude extension reports via hooks; pi extension has no hooks yet.
+- VS Code plugins: claude extension reports via hooks; the pi extension
+  hooks-bridge.ts now connects to the gateway; agy CLI reports automatically as
+  agent=agy through the Antigravity fusion hooks.
 
 ---
 
@@ -329,13 +399,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pc\gateway\install_autosta
 
 ### 9.5 Watchdog & Tray (enabled on this machine)
 
-Two scheduled tasks (registered by install_autostart.ps1, all run silently with
-`-WindowStyle Hidden`):
+Three scheduled tasks (registered by install_autostart.ps1, all launched via
+`wscript.exe` + VBS hidden launchers — no console window at all; since
+2026-08-03 tasks no longer invoke powershell directly to avoid window flashes):
 
 | Task | Trigger | Content |
 |---|---|---|
-| StackChan-FusionGateway | at logon | start gateway (silent) |
-| StackChan-FusionTray | at logon | system tray status tool |
+| StackChan-FusionGateway | at logon | wscript-hidden start gateway |
+| StackChan-FusionTray | at logon | wscript-hidden start system tray |
+| StackChan-FunnelProxyWatchdog | logon + every 5 min | wscript-hidden self-heal funnel backup route |
 
 The tray polls every 5s: gateway /healthz, MCP profile, robot bridge heartbeat.
 Icon: green=all OK / orange=partial / red=gateway offline; balloon on state

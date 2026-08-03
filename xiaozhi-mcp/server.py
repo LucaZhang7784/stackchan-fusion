@@ -95,10 +95,25 @@ def _outbox_write(tag: str, task: str, ok: bool, output: str) -> None:
 
 
 def _outbox_read_latest() -> str:
-    files = sorted(OUTBOX.glob("*.txt"), key=lambda p: p.stat().st_mtime)
-    if not files:
-        return "还没有完成的任务。"
-    latest = files[-1]
+    """只返回 30 分钟内的新结果; 过期结果自动归档, 避免播报陈旧内容(如 8/1 的旧查询)。"""
+    now = time.time()
+    fresh: list = []
+    for p in OUTBOX.glob("*.txt"):
+        try:
+            age = now - p.stat().st_mtime
+        except Exception:
+            age = 1 << 30
+        if age > 1800:  # 30 分钟
+            try:
+                p.rename(OUTBOX / "done" / p.name)
+            except Exception:
+                pass
+            continue
+        fresh.append(p)
+    fresh.sort(key=lambda p: p.stat().st_mtime)
+    if not fresh:
+        return "还没有新完成的任务。"
+    latest = fresh[-1]
     text = latest.read_text(encoding="utf-8", errors="replace")
     latest.rename(OUTBOX / "done" / latest.name)
     return _truncate(text)
@@ -118,23 +133,18 @@ async def claude_query(task: str) -> str:
     """调用电脑上的 Claude Code CLI 执行任务(访问本地文件/知识库/运行技能)。
 
     何时使用: 用户要求 Claude 写文章、查资料、分析、处理本地文件等复杂任务。
-    本工具异步执行: 立即返回"正在执行"的回执, 结果稍后由 agent_result_check 获取。
+    本工具在 Claude Code 自己的窗口里可见执行, 结果由 hooks 回流, agent_pending 播报。
     简单闲聊/查时间/控制设备不要调用本工具。
     Args:
         task: 给 Claude Code 的中文指令, 越具体越好。
     """
     async def _bg() -> None:
-        res = await asyncio.to_thread(
-            lambda: _run_agent(CLAUDE_BIN, ["-p", task, "--output-format", "text"], ASYNC_TIMEOUT_SECS)
-        )
-        if res["ok"]:
-            result = _truncate(res["out"])
-        else:
-            result = f"Claude Code 执行失败(rc={res['rc']}): {_truncate(res['err'] or res['out'], 300)}"
-        _outbox_write("claude", task, res["ok"], result)
+        ok, msg = await asyncio.to_thread(agents_core.spawn_visible, "claude", task)
+        if not ok:
+            _outbox_write("claude", task, False, msg)
 
     asyncio.create_task(_bg())
-    return f"Claude Code 正在执行「{task[:30]}」, 稍后问「结果出来了吗」"
+    return f"Claude Code 已在窗口启动「{task[:30]}」, 窗口里可见执行"
 
 
 @mcp.tool()
@@ -147,17 +157,12 @@ async def codex_query(task: str) -> str:
         task: 给 Codex 的指令。
     """
     async def _bg() -> None:
-        res = await asyncio.to_thread(
-            lambda: _run_agent(CODEX_BIN, ["exec", "--full-auto", "--skip-git-repo-check", task], ASYNC_TIMEOUT_SECS)
-        )
-        if res["ok"]:
-            result = _truncate(res["out"])
-        else:
-            result = f"Codex 执行失败(rc={res['rc']}): {_truncate(res['err'] or res['out'], 300)}"
-        _outbox_write("codex", task, res["ok"], result)
+        ok, msg = await asyncio.to_thread(agents_core.spawn_visible, "codex", task)
+        if not ok:
+            _outbox_write("codex", task, False, msg)
 
     asyncio.create_task(_bg())
-    return f"Codex 正在执行「{task[:30]}」, 稍后问「结果出来了吗」"
+    return f"Codex 已在窗口启动「{task[:30]}」, 窗口里可见执行"
 
 
 @mcp.tool()
@@ -209,7 +214,7 @@ async def agent_query(agent: str, task: str) -> str:
     """调用电脑上指定 agent(agy/pi/claude/codex) 执行任务。
 
     何时使用: 用户要求 agy/pi/claude/codex 查资料、写代码、分析等复杂任务时。
-    本工具异步执行: 立即返回"正在执行"回执, 结果稍后由 agent_result_check 获取。
+    在 agent 自己的窗口里可见执行, 结果由 hooks 回流, agent_pending 播报。
     Args:
         agent: agy/pi/claude/codex。
         task: 给该 agent 的中文指令。
@@ -219,13 +224,12 @@ async def agent_query(agent: str, task: str) -> str:
         return f"未知 agent: {name} (可选: {', '.join(agents_core.AGENT_CLIS)})"
 
     async def _bg() -> None:
-        result = await asyncio.to_thread(
-            lambda: agents_core.query(name, task, ASYNC_TIMEOUT_SECS)
-        )
-        _outbox_write(name, task, True, result)
+        ok, msg = await asyncio.to_thread(agents_core.spawn_visible, name, task)
+        if not ok:
+            _outbox_write(name, task, False, msg)
 
     asyncio.create_task(_bg())
-    return f"{name} 正在执行「{task[:30]}」, 稍后问「结果出来了吗」"
+    return f"{name} 已在窗口启动「{task[:30]}」, 窗口里可见执行"
 
 
 @mcp.tool()

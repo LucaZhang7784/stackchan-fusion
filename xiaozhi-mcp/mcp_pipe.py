@@ -204,6 +204,9 @@ def build_server_command(target=None):
 
         # environment for child process
         child_env = os.environ.copy()
+        # 子进程 stdio 强制 UTF-8, 避免 Windows 本地编码(cp936)把中文读乱
+        child_env.setdefault("PYTHONUTF8", "1")
+        child_env.setdefault("PYTHONIOENCODING", "utf-8")
         for k, v in (entry.get("env") or {}).items():
             child_env[str(k)] = str(v)
 
@@ -237,7 +240,10 @@ def build_server_command(target=None):
         raise RuntimeError(
             f"'{target}' is neither a configured server nor an existing script"
         )
-    return [sys.executable, script_path], os.environ.copy()
+    child_env = os.environ.copy()
+    child_env.setdefault("PYTHONUTF8", "1")
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
+    return [sys.executable, script_path], child_env
 
 if __name__ == "__main__":
     # Register signal handler

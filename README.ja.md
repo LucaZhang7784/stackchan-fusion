@@ -213,6 +213,47 @@ xiaozhi LLM ──ツール呼び出し──► xiaozhi-mcp bridge (クラウ�
   ユーザーが回答 → LLM が agent_confirm 呼び出し → 回答を reply_file へ書込み →
   confirm_mcp が allow/deny を返す → claude 続行
 
+### Antigravity デスクトップ版「要確認」通知 (2026-08-03)
+
+- `agents/antigravity_hook.py`: Antigravity デスクトップ版言語サーバーの hooks
+  クライアント。「要確認 / タスク完了」イベントをゲートウェイ
+  /api/agent_event（agent=antigravity）へ POST します。
+- 設定: `~/.gemini/config/hooks.json` の `fusion` ブロック（死んでいた stackchan
+  ブロックを置換）。登録イベント: PreToolUse（権限が必要なツール:
+  run_command / write_file / apply_patch / web / MCP）、PermissionRequest /
+  PermissionDenied / Elicitation、Stop。
+- 流れ: Antigravity が確認要求 → hook が報告 → ゲートウェイが
+  「antigravity 需要確認: ...」をキューへ → ロボットは起床後に agent_pending で
+  読み上げ; Stop → 「antigravity 任务完成」。
+- 注意: hooks.json を編集したら **Antigravity デスクトップの再起動**が必要。
+  言語サーバーは UserPromptSubmit をサポートしていません。デスクトップの権限
+  ダイアログには音声回答の返信チャネルがありません（UI で確認してください。
+  完全な確認ループは claude のみ）。
+- 検証: Antigravity にコマンド実行 / ファイル書き込みをさせ、ロボットを起こして
+  「メッセージはある?」と聞いてください。
+
+### Codex デスクトップ/CLI、agy CLI、pi 拡張 hooks (2026-08-03)
+
+- `agents/codex_hook.py` + `~/.codex/hooks.json`: Codex デスクトップ版と CLI の
+  SessionStart / UserPromptSubmit / PermissionRequest / Notification / Stop /
+  SessionEnd をゲートウェイへ報告。PermissionRequest → question（ロボットが
+  「codex 需要確認: …」と読み上げ）; Stop/SessionEnd → done（最後のアシスタント
+  テキストを要約、同一セッションは120秒以内1回のみ）。
+- Codex 0.146 は未信頼 hook をデフォルトで実行しない: `~/.codex/config.toml` に
+  `bypass_hook_trust = true`（デスクトップ版に有効）、ゲートウェイが起動する
+  codex コマンドには `--dangerously-bypass-hook-trust` を追加（CLI exec はこの
+  フラグのみ有効）。設定変更後は Codex を再起動。
+- agy CLI は `~/.gemini/config/hooks.json` の `fusion` ブロックを再利用:
+  antigravity_hook.py が artifactDirectoryPath に `antigravity-cli` を含む
+  セッションを agent=agy として自動分類（デスクトップ版は antigravity のまま）。
+- pi 拡張 `~/.pi/agent/extensions/hooks-bridge.ts`: session_start/input → progress,
+  agent_end → done（最後のアシスタントテキストを要約）; speak/respond/move_head
+  ツールは xiaozhi /api/push で即時読み上げ。
+- 検証: `codex exec --dangerously-bypass-hook-trust "只回复两个字：收到"` /
+  `agy --print "只回复两个字：收到"` / `pi --print "只回复两个字：收到"` を実行し、
+  `gateway/state/codex_hook.log` または `gateway/data/agent_events.jsonl` に
+  対応するエージェントイベントが記録されることを確認。
+
 ### 使い方
 
 ```powershell
@@ -221,6 +262,22 @@ python <PROJECT_DIR>\agents\claude_run.py "タスク説明" "作業ディレク�
 # VS Code/ターミナルの claude セッションに hooks 導入
 powershell -ExecutionPolicy Bypass -File <PROJECT_DIR>\agents\install_claude_hooks.ps1
 ```
+
+### 可視ウィンドウ実行 (2026-08-03)
+
+- ロボット駆動の `agent_query` / `codex_query` / `claude_query` は、各エージェント
+  専用の可視コンソールウィンドウ（タイトル: Codex-Asong / ClaudeCode-Asong /
+  Antigravity-Asong / pi-Asong）でタスクを実行します。実行過程と出力は
+  ウィンドウを閉じるまで見えます。
+- 結果は各エージェントの hooks（前節参照）でゲートウェイに戻り、ロボットは起床後
+  agent_pending で読み上げます。
+- codex サンドボックス修正: `--sandbox workspace-write` を廃止（ローカル Windows
+  サンドボックスは子プロセスを起動できずエラー5 Access denied）、グローバルの
+  danger-full-access 設定を使用。
+- 既知の制約: Codex / Antigravity デスクトップアプリや VS Code 拡張パネルの内部
+  セッションには外部からタスクを注入できません。ロボットのタスクは CLI ウィンドウで
+  実行され、デスクトップ/VS Code のプラグインセッションは hooks 経由でイベントを
+  報告します（キュー共有）。
 
 ### クラウド STACK エージェントのキャラクター設定（xiaozhi.me コンソールに貼り付け済み、ウェイクワード「阿松」）
 
@@ -242,18 +299,29 @@ powershell -ExecutionPolicy Bypass -File <PROJECT_DIR>\agents\install_claude_hoo
 - 重要: 各段階で1回だけ呼ぶこと; LED ツール失敗時は無視
 ```
 
-> 注: 現在のファームウェアは esp32 ベースの改造版（ウェイクワード「阿松」+ LED
-> 状態ライト）。書き込みファイルは `firmware/`（merged-binary.bin + xiaozhi.bin）。
+> Prompt v2（起床時に毎回 agent_pending を確認し、メッセージを1件ずつ読み上げて
+> clear する「起床優先ルール」）の全文は `prompt-阿松-v2.md`（中国語）を参照。
+
+> 注: 現在のファームウェアは esp32 ベースの改造版 v1.0.2-micfix（検証済みの 07.31 基盤
+> `reference/stackchan-xiaozhi-firmware` をベースに、ウェイクワード「阿松」+ LED を維持し、
+> マイクゲイン 30→42 のみ変更して音声認識を改善）、焼き込みファイルは
+> `firmware/post-fw-v1.0.2-micfix/`（xiaozhi.bin @ 0x410000 を app-only で書き込むだけで、
+> 消去・再設定は不要）。
 
 ### 既知の制約
 
 - クラウド経路にはプッシュチャネルなし: エージェントイベントはゲートウェイでキュー、
   ロボットは**起床後**に agent_pending で読み上げ（割り込み不可）; 自前経路は robot_say でプッシュ可。
-- 確認ループは claude を完全サポート（permission-prompt-tool）; agy/pi はヘッドレス
-  クエリ可、対話確認は CLI 対応待ち; codex CLI クエリ可、確認機構は公式対応待ち。
+- ローカル予備経路を維持: docker コンテナ + Tailscale Funnel + funnel_proxy を自動起動
+  （タスク StackChan-FunnelProxyWatchdog: ログオン + 5分ごとの自己修復）。クラウド経路が
+  失敗したら https://YOUR_FUNNEL_DOMAIN.ts.net でローカル経路へ切替可能（robot_say 対応）。
+- 確認ループは claude を完全サポート（permission-prompt-tool）; Codex デスクトップ+CLI
+  は hooks 導入済み（タスク開始/完了/承認要求を報告、権限確認は Codex UI で実施）;
+  agy/pi はヘッドレスクエリ可、対話確認は CLI 対応待ち。
 - pi は `--no-context-files` 必須、workdir=ユーザーホーム（一部ディレクトリで
   "content is not iterable" エラー）。
-- VS Code プラグイン: claude 拡張は hooks で報告; pi 拡張は hooks 未対応。
+- VS Code プラグイン: claude 拡張は hooks で報告; pi 拡張 hooks-bridge.ts は
+  ゲートウェイ接続済み; agy CLI は Antigravity fusion hooks 経由で agent=agy として自動報告。
 
 ---
 
@@ -325,13 +393,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pc\gateway\install_autosta
 
 ### 9.5 監視とトレイ（本機で有効化済み）
 
-2つのスケジュールタスク（install_autostart.ps1 で一括登録、全て
-`-WindowStyle Hidden` で静かに実行）:
+3つのスケジュールタスク（install_autostart.ps1 で一括登録、全て
+`wscript.exe` + VBS 非表示ランチャーで実行 — コンソールウィンドウは一切出ません。
+2026-08-03 以降、タスクは powershell を直接起動せずウィンドウの点滅を防止）:
 
 | タスク | トリガー | 内容 |
 |---|---|---|
-| StackChan-FusionGateway | ログオン時 | ゲートウェイ起動（サイレント） |
-| StackChan-FusionTray | ログオン時 | タスクトレイ状態ツール |
+| StackChan-FusionGateway | ログオン時 | wscript 非表示でゲートウェイ起動 |
+| StackChan-FusionTray | ログオン時 | wscript 非表示でタスクトレイ起動 |
+| StackChan-FunnelProxyWatchdog | ログオン時 + 5分毎 | wscript 非表示で予備経路 funnel を自己修復 |
 
 トレイは5秒毎にポーリング: ゲートウェイ /healthz、MCP profile、ロボット bridge の
 ハートビート。アイコン: 緑=全て正常 / オレンジ=一部異常 / 赤=ゲートウェイ停止。

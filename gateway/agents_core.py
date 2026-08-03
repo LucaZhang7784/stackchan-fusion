@@ -3,7 +3,7 @@
 
 提供:
   - agent_status(name) : CLI 可用性 + 运行进程 + 待确认数 + 最近事件
-  - agent_query(name, task, timeout) : 无头执行 agy/pi/claude/codex
+  - agent_query(name, task, timeout) : 在 agent 自己的可见窗口执行(结果经 hooks 回流)
   - agent_pending(clear) : 待播报事件 + 待确认问题(机器人/LLM 读取)
   - agent_confirm(name, answer) : 把语音回答写回等待中的 agent
   - event_post(...) / confirm_register / confirm_answer : 内部接口
@@ -17,6 +17,8 @@ import subprocess
 import time
 import urllib.request
 import uuid
+import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -88,14 +90,26 @@ def run_agent(name: str, task: str, timeout: int = 120, workdir: str | None = No
     return _run(full, timeout, workdir or cfg.get("workdir") or str(ROOT))
 
 
+_probe_cache: dict = {}
+_PROBE_TTL = 120  # 秒; CLI 版本短时间内不变, 缓存避免 agent_status 每次启动 CLI
+
+
 def probe(name: str) -> tuple[bool, str]:
-    """探测 agent CLI 是否可用(返回 可用性, 版本首行)。"""
+    """探测 agent CLI 是否可用(返回 可用性, 版本首行)。带 120s 缓存。"""
+    now = time.time()
+    cached = _probe_cache.get(name)
+    if cached and now - cached[0] < _PROBE_TTL:
+        return cached[1], cached[2]
     via_http = _exec_via_http(name, "probe", "", 15)
     if via_http is not None:
         if via_http.get("ok"):
             first = (via_http.get("out") or "").strip().splitlines()
-            return True, (first[0][:80] if first else "ok")
-        return False, (via_http.get("err") or via_http.get("out") or "spawn failed").strip()[:150]
+            info = (first[0][:80] if first else "ok")
+            _probe_cache[name] = (now, True, info)
+            return True, info
+        info = (via_http.get("err") or via_http.get("out") or "spawn failed").strip()[:150]
+        _probe_cache[name] = (now, False, info)
+        return False, info
     cfg = AGENT_CLIS.get(name, {})
     version_args = cfg.get("version_args", ["--version"])
     cli = cfg.get("cli", name)
@@ -104,8 +118,12 @@ def probe(name: str) -> tuple[bool, str]:
     r = _run(full, 15, cfg.get("workdir") or str(ROOT))
     if r["ok"]:
         first = (r["out"] or "").strip().splitlines()
-        return True, (first[0][:80] if first else "ok")
-    return False, (r["err"] or r["out"] or "spawn failed").strip()[:150]
+        info = (first[0][:80] if first else "ok")
+        _probe_cache[name] = (now, True, info)
+        return True, info
+    info = (r["err"] or r["out"] or "spawn failed").strip()[:150]
+    _probe_cache[name] = (now, False, info)
+    return False, info
 
 
 def running_processes(name: str) -> list[int]:
@@ -207,12 +225,75 @@ def confirm_answer(agent: str, answer: str) -> tuple[bool, str]:
 # ---------------------------------------------------------------- agent 定义
 AGENT_CLIS: dict = {
     "claude": {"cli": "claude", "exec_args": ["-p"], "version_args": ["--version"], "workdir": str(Path.home())},
-    "codex": {"cli": "codex", "exec_args": ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write"],
+    "codex": {"cli": "codex", "exec_args": ["exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust"],
               "version_args": ["--version"], "workdir": str(ROOT)},
     "agy": {"cli": "agy", "exec_args": ["--print"], "version_args": ["--version"], "workdir": str(ROOT)},
     "pi": {"cli": "pi", "exec_args": ["--print", "--no-session", "--no-context-files"],
            "version_args": ["--version"], "workdir": str(Path.home())},
 }
+
+
+CREATE_NEW_CONSOLE = 0x00000010 if os.name == "nt" else 0
+PROJECT_ROOT = ROOT.parent.parent  # D:\ProcessCenter\StackChan
+VISIBLE_DIR = ROOT / "state" / "visible_runs"
+
+# 机器人驱动的任务: 在 agent 自己的可见窗口里执行(用户能看到过程与输出)。
+# 注意: codex 不能带 --sandbox workspace-write, 本机沙箱无法 spawn 子进程
+# (Windows 错误 5 Access denied), 用全局 danger-full-access 配置即可正常执行。
+VISIBLE_SPECS: dict = {
+    "codex": {"cmd": ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust"],
+              "workdir": str(PROJECT_ROOT), "title": "Codex-Asong"},
+    "claude": {"cmd": ["claude", "-p"],
+               "workdir": str(Path.home()), "title": "ClaudeCode-Asong"},
+    "agy": {"cmd": ["agy", "--prompt-interactive"],
+            "workdir": str(PROJECT_ROOT), "title": "Antigravity-Asong"},
+    "pi": {"cmd": ["pi", "--no-context-files"],
+           "workdir": str(Path.home()), "title": "pi-Asong"},
+}
+
+
+def spawn_visible(name: str, task: str) -> tuple[bool, str]:
+    """在指定 agent 的可见控制台窗口里执行任务(新窗口, 保留到用户关闭)。
+
+    任务内容经环境变量 ASON_TASK 传入(Unicode 安全), 窗口标题标明 agent,
+    执行结束后窗口保留输出并暂停。结果回流走各 agent 的 hooks/扩展
+    (codex_hook / claude_hook / antigravity fusion / pi hooks-bridge)。
+    """
+    spec = VISIBLE_SPECS.get(name)
+    if not spec:
+        return False, f"未知 agent: {name}"
+    task = str(task or "").strip()
+    if not task:
+        return False, "任务内容为空"
+    try:
+        VISIBLE_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        cmd_file = VISIBLE_DIR / f"{name}-{ts}.cmd"
+        quoted = " ".join(f'"{c}"' for c in spec["cmd"])
+        content = (
+            "@echo off\r\n"
+            "chcp 65001 >nul\r\n"
+            f"title {spec['title']}\r\n"
+            f"cd /d {spec['workdir']}\r\n"
+            "echo [Asong] task started: %ASON_TASK%\r\n"
+            "echo.\r\n"
+            f"{quoted} \"%ASON_TASK%\"\r\n"
+            "echo.\r\n"
+            "echo [Asong] task finished, result synced to robot\r\n"
+            "pause\r\n"
+        )
+        cmd_file.write_text(content, encoding="utf-8")
+        env = os.environ.copy()
+        env["ASON_TASK"] = task
+        subprocess.Popen(
+            ["cmd", "/k", str(cmd_file)],
+            cwd=spec["workdir"], env=env,
+            creationflags=CREATE_NEW_CONSOLE, close_fds=True,
+        )
+        events_append(name, "progress", f"{name} 任务已在窗口启动: {task[:150]}")
+        return True, f"已在 {spec['title']} 窗口启动「{task[:30]}」"
+    except Exception as e:
+        return False, f"启动可见窗口失败: {e}"
 
 
 def status_text(name: str) -> str:
@@ -227,21 +308,47 @@ def status_text(name: str) -> str:
 
 
 def status_all_text() -> str:
-    return "\n".join(status_text(n) for n in AGENT_CLIS)
+    """并发探测 4 个 agent, 避免串行 4×(CLI 启动+进程查询) 导致工具超时。"""
+    names = list(AGENT_CLIS)
+    with ThreadPoolExecutor(max_workers=min(4, len(names))) as ex:
+        parts = list(ex.map(status_text, names))
+    return "\n".join(parts)
+
+
+def _speech_clean(text: str, max_len: int = 150) -> str:
+    """把 agent 事件摘要清洗成适合语音朗读的文本(去 markdown/路径/长串)。"""
+    t = str(text or "")
+    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)          # [text](url) -> text
+    t = re.sub(r"[`*_#>{}\-]{1,}", " ", t)                   # markdown 标记
+    t = re.sub(r"file:///\S*", "", t)                        # file:/// URI
+    t = re.sub(r"\b[A-Za-z]:[\\/][^\s，。；、)]*", "", t)      # Windows 路径
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+([：，。；、,.;])", r"\1", t)               # 标点前不留空格
+    t = t.strip(":：-—·,，。;；")
+    return t[:max_len]
 
 
 def pending_text(clear: bool = False) -> str:
-    """机器人端调用: 返回待播报的 agent 事件 + 待确认问题。"""
+    """机器人端调用: 返回待播报的 agent 事件 + 待确认问题(已口语化)。"""
     parts = []
     for ev in events_read(clear):
-        parts.append(f"[{ev['agent']} {ev['type']}] {ev['summary']}")
+        parts.append(f"[{ev['agent']} {ev['type']}] {_speech_clean(ev['summary'])}")
     for c in confirm_pending():
-        parts.append(f"[{c['agent']} 待确认] {c['question']}")
+        parts.append(f"[{c['agent']} 待确认] {_speech_clean(c['question'])}")
     return "\n".join(parts) if parts else ""
 
 
-def query(agent: str, task: str, timeout_s: int = 120) -> str:
-    """执行 agent 任务并返回文本结果(同时记 done 事件)。"""
+def query(agent: str, task: str, timeout_s: int = 120, visible: bool = True) -> str:
+    """执行 agent 任务。
+
+    visible=True(默认, 机器人驱动): 在 agent 自己的可见窗口执行, 结果由 hooks 回流;
+    visible=False: 无头执行并直接返回结果(脚本/自检用)。
+    """
+    if visible:
+        ok, msg = spawn_visible(agent, task)
+        if ok:
+            return msg
+        # 窗口启动失败 -> 回退无头执行并返回结果
     res = run_agent(agent, task, timeout_s)
     if res["ok"]:
         out = (res["out"] or "").strip()

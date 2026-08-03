@@ -65,7 +65,7 @@ DEFAULT_CONFIG = {
     "http_host": "0.0.0.0",
     "http_port": 8010,
     "push_api_url": "http://127.0.0.1:8003/api/push",
-    "push_secret": "YOUR_GATEWAY_TOKEN",
+    "push_secret": "YOUR_PUSH_SECRET",
     "push_interval_s": 5,
 }
 
@@ -400,7 +400,7 @@ def codex_query(instruction: str, timeout_s: int = 120) -> str:
         return "Codex 执行被配置禁用。"
     timeout_s = max(10, min(int(timeout_s), int(CFG.get("max_timeout_s", 600))))
     log(f"codex_query: {instruction[:200]}")
-    res = run_agent_cli(CFG.get("codex_cli", "codex"), ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", instruction], timeout_s)
+    res = run_agent_cli(CFG.get("codex_cli", "codex"), ["exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust", instruction], timeout_s)
     return _format_cli_result("Codex", res)
 
 
@@ -516,7 +516,7 @@ def build_http_app():
         summary = str(data.get("summary", ""))
         reply_file = str(data.get("reply_file", ""))
         session_id = str(data.get("session_id", ""))
-        if agent not in agents_core.AGENT_CLIS:
+        if agent not in agents_core.AGENT_CLIS and agent != "antigravity":
             return JSONResponse({"error": f"unknown agent: {agent}"}, status_code=400)
         if etype == "question":
             c = agents_core.confirm_register(agent, summary, reply_file)
@@ -604,7 +604,7 @@ def main() -> None:
         from mcp.server.transport_security import TransportSecuritySettings
         mcp.settings.transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "YOUR_TAILSCALE_IP:*"],
+            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "100.69.221.25:*"],
         )
     except Exception as e:
         log(f"transport security config error: {e}")

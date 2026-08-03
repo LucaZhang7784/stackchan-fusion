@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 """verify_connectivity.py — 分层连通性验证 (针对痛点3: 无法验证机器人与 Codex/Claude Code 连通性)
 
-检查项:
+检查项(云链路 + 唤醒播报 口径, 2026-08-03):
   [1] Funnel OTA           机器人取配置的入口
   [2] 网关 /healthz        融合网关进程
-  [3] MCP接入点 health     8004 端点 (tool/robot 连接数)
-  [4] 服务端MCP注册        容器日志里 fusion 工具是否注册
-  [5] 机器人在线           容器日志最近 N 分钟是否出现机器人 MAC / 设备工具数
+  [3] 云桥接               xiaozhi-mcp 进程 + bridge.err 心跳(≤3分钟)
+  [4] agent_status 延迟    本地工具处理耗时(<10s, 修复超时后应 ~5s)
+  [5] 备用自建链路         8004 health + docker 容器(仅参考, 云链路为主)
   [6] Agent CLI            claude --version / codex --version
 
 用法: python verify_connectivity.py [--strict]
@@ -18,6 +18,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -85,33 +86,36 @@ def main():
     gw_ok = status2 == 200
     check("网关 /healthz", gw_ok, f"HTTP {status2}" + (f" tools={json.loads(body2).get('tools')}" if gw_ok else ""))
 
-    # [3] MCP 接入点
+    # [3] 云桥接(机器人主链路): xiaozhi-mcp 进程 + bridge.err 心跳
+    rc_b, out_b = run(["powershell", "-NoProfile", "-Command",
+        "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -match 'xiaozhi-mcp' } | Measure-Object | Select-Object -ExpandProperty Count"], 20)
+    n_bridge = int((out_b or "0").strip().splitlines()[-1]) if (out_b or "").strip() else 0
+    err_path = ROOT / "xiaozhi-mcp" / "bridge.err"
+    hb_age = -1
+    if err_path.exists():
+        hb_age = time.time() - err_path.stat().st_mtime
+    check("云桥接(进程+心跳)", n_bridge >= 2 and 0 <= hb_age < 180,
+          f"进程={n_bridge} 心跳={int(hb_age)}s" if hb_age >= 0 else f"进程={n_bridge} 心跳文件缺失")
+
+    # [4] agent_status 本地处理延迟(云工具超时修复验证)
+    sys.path.insert(0, str(GATEWAY_DIR))
+    import agents_core  # noqa: E402
+    t0 = time.time()
+    agents_core.status_all_text()
+    dt = time.time() - t0
+    check("agent_status 延迟", dt < 10, f"{dt:.1f}s (缓存命中后 <1s)")
+
+    # [5] 备用自建链路(仅参考, 云链路为主)
     if health_url:
         status3, body3 = http_get(health_url, 10)
         try:
-            data = json.loads(body3)
-            result = data.get("result") or {}
-            conns = result.get("connections") or {}
-            ok3 = result.get("status") == "success"
-            check("MCP接入点 health", ok3, f"tool={conns.get('tool_connections') or '-'} robot={conns.get('robot_connections') or '-'} total={conns.get('total_connections') or '-'}")
-        except Exception as e:
-            check("MCP接入点 health", False, f"解析失败: {e}")
-    else:
-        check("MCP接入点 health", False, "未配置 endpoint_health_url")
-
-    # [4] 服务端 MCP 注册
-    import re
-    rc, logs = run(["docker", "logs", "--since", f"{lookback}m", container], 40)
-    reg = re.findall(r"服务端MCP客户端已连接，可用工具:\s*(\[[^\]]*\])", logs)
-    last_tools = reg[-1] if reg else "[]"
-    check("服务端MCP注册", ("fusion" in last_tools.lower() or "codex_query" in last_tools.lower()), last_tools)
-
-    # [5] 机器人在线
-    logs_l = logs.lower()
-    mac_plain = mac.lower().replace(":", "")
-    seen = mac_plain in logs_l or mac.lower() in logs_l
-    dev_tools = re.findall(r"客户端设备支持的工具数量:\s*(\d+)", logs)
-    check("机器人在线", seen, f"设备工具数={dev_tools[-1] if dev_tools else 'N/A'}")
+            ok3 = (json.loads(body3).get("result") or {}).get("status") == "success"
+        except Exception:
+            ok3 = False
+        check("备用链路 8004 health", ok3, f"HTTP {status3}")
+    rc_c, out_c2 = run(["docker", "ps", "--format", "{{.Names}}:{{.Status}}"], 30)
+    cont_ok = container in out_c2 and "healthy" in out_c2
+    check("备用容器 healthy", cont_ok, container)
 
     # [6] Agent CLI
     _, out_c = run([cfg.get("claude_cli", "claude"), "--version"], 20)
@@ -131,8 +135,10 @@ def main():
             n_fail += 1
         print(f"[{tag}] {name:20s} {detail}")
     print("=" * 70)
-    print("端到端人工验证: 对机器人说「查一下Codex/Claude的状态」, 应听到机器人播报 agent_status 的结果。")
-    print("Codex/Claude侧验证: claude -p \"调用 robot_status\" 或在本机 MCP 客户端里调 robot_say(\"测试消息\") 再对机器人说「有什么消息」。")
+    print("端到端人工验证(云链路+唤醒播报):")
+    print("  1) 对机器人说「阿松」唤醒 → 应自动检查并播报 agent_pending 中的消息(唤醒优先规则)")
+    print("  2) 对机器人说「检查 agent 状态」→ 应播报 agent_status 结果(不再超时)")
+    print("  3) 对机器人说「让 codex 做…」→ 电脑弹出对应 agent 窗口执行, 完成后唤醒机器人念结果")
     sys.exit(1 if (args.strict and n_fail) else 0)
 
 

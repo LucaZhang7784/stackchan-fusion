@@ -33,7 +33,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 | mcp-endpoint-server (Docker) | 8004 | ✅ Up healthy |
 | xiaozhi web / redis / db | 8002/6379/3306 | ✅ Up |
 | funnel_proxy.py (备用路由) | 8090 | ✅ 运行中 |
-| Tailscale Funnel | 443 | ✅ https://YOUR_FUNNEL_DOMAIN.ts.net |
+| Tailscale Funnel | 443 | ✅ https://dahuilucaaaaa.tail61f3fa.ts.net |
 | 系统托盘 fusion_tray.ps1 | — | ✅ 单实例（有保护） |
 
 ## 三、机器人固件（重要）
@@ -74,11 +74,22 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 4. **陈旧 outbox**: `agent_result_check` 只返回 30 分钟内新结果, 过期自动归档; 旧文件已清空。
 5. **托盘双图标**: fusion_tray.ps1 加单实例保护。
 6. **计划任务弹窗**: 全部改 wscript.exe + VBS 隐藏启动（StackChan 3 个任务）。
-7. **mcp-endpoint health key**: config.json 需填容器实际 key（部署时从容器日志获取）。
+7. **mcp-endpoint health key**: config.json 已改为容器实际 key `22e242a3ba4e4eaaa02c924c6fc9ded7`。
+8. **claude 可见窗口无完成事件**: `claude -p`(print 模式)不触发 Claude Code hooks →
+   `agents/claude_visible_run.py` 包装脚本运行并捕获输出, 完成后同时 POST done 到网关
+   + 写 outbox（agent_result_check 与 agent_pending 两条路都通）。
+9. **claude/pi 可见窗口工作目录**: 从用户主目录改为项目目录 `D:\ProcessCenter\StackChan`
+   （与 codex/agy 一致, 「总结当前项目」才有上下文）。
+10. **托盘队列操作菜单**: 新增「队列操作」子菜单——显示队列消息内容 / 清空队列
+    （自动备份, UTF-8 无 BOM）/ 清空待确认问题。
+11. **claude -p 经 cc-switch 非流式输出**: 大任务窗口几十分钟无输出属正常,
+    完成后一次性显示; cc-switch 当前路由为 Kimi coding plan（机器人语音链路的
+    DeepSeek 是另一条, 互不相干）。
 
 ## 七、待办
 
-- [ ] Phase 4 场景 3 完整验收: 「让 codex 总结项目」→ 窗口执行 → 唤醒 → 播报结果（其余场景已过）
+- [x] Phase 4 完整验收: 唤醒播报 ✅ / 状态查询 ✅ / 任务闭环 ✅
+      （codex、claude 总结项目 → 窗口执行 → 唤醒/主动问结果均播报成功, 2026-08-03 晚实测）
 - [ ] Phase 5 可选: 云端空闲自查（非打断）; 桌面应用会话注入（等 codex remote-control 稳定）
 - [ ] 机器人目前可能待机, 需唤醒后再验证
 - [ ] 重新启用 auth（MAC 白名单空 token bug, 可选）

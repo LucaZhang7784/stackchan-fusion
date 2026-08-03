@@ -38,6 +38,22 @@
 - `package-stackchan.zip`: 全量迁移包（固件 + PC 端 + README + prompt + MEMORY）
 - GitHub 发布副本: `stackchan-fusion-github/`（已脱敏, 供他人部署）
 
+### 5. 晚间收尾（2026-08-03 晚, 实测）
+
+- **claude 任务闭环打通**: `claude -p` 不触发 hooks → 新增 `agents/claude_visible_run.py`
+  包装脚本（捕获输出 → POST done 到网关 + 写 outbox）, 机器人的
+  `agent_pending`（唤醒播报）和 `agent_result_check`（主动问结果）两条路都能拿到结果。
+- **claude/pi 可见窗口工作目录修正**: 用户主目录 → 项目目录, 「总结当前项目」有上下文。
+- **托盘「队列操作」菜单**: 显示队列消息内容 / 清空队列（自动备份）/ 清空待确认。
+- **claude -p 经 cc-switch 非流式**: 大任务窗口数分钟无输出属正常（cc-switch 当前路由 Kimi,
+  与机器人链路的 xiaozhi.me DeepSeek 是两条独立链路）。
+- **Phase 4 完整验收通过**: 唤醒播报 / 状态查询 / 任务闭环（codex+claude）全部实测成功。
+
+## 版本记录
+
+- v08.03（2026-08-03）: 云链路+唤醒播报、固件 v1.0.2-micfix、四 agent hooks、
+  可见窗口执行、7+4 项稳定性修复、Phase 4 验收通过。
+
 ## 文件清单
 
 | 文件 | 说明 |

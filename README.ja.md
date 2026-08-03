@@ -83,7 +83,7 @@ python scripts\verify_connectivity.py
 | エージェント | 連携方法 | 能動的報告 | 音声での回答書き戻し |
 |---|---|---|---|
 | codex | `~/.codex/hooks.json` → `agents/codex_hook.py`；`config.toml` `bypass_hook_trust=true`、`[windows] sandbox='unelevated'` | ✅ デスクトップ+CLI | ❌（codex UI で確認） |
-| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`；`agents/confirm_mcp.py` | ✅ | ✅ 完全ループ |
+| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`；可視ウィンドウは `agents/claude_visible_run.py` 経由で完了を報告；`agents/confirm_mcp.py` | ✅ | ✅ 完全ループ |
 | agy / Antigravity | `~/.gemini/config/hooks.json` `fusion` ブロック → `agents/antigravity_hook.py` | ✅ CLI は agent=agy | ❌ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → ゲートウェイ | ✅ | ❌ |
 
@@ -113,7 +113,7 @@ python scripts\verify_connectivity.py
 | xiaozhi-esp32-server (Docker) | 8000/8003 | 予備リンク |
 | mcp-endpoint-server (Docker) | 8004 | 予備リンクの MCP エンドポイント |
 | funnel_proxy.py | 8090 | 予備ルート（自動起動 + 5分自己修復） |
-| システムトレイ | — | 状態監視 + ゲートウェイ監視（単一インスタンス保護） |
+| システムトレイ | — | 状態監視 + ゲートウェイ監視（単一インスタンス保護）+ キュー操作メニュー（表示/クリア） |
 
 監視とスケジュールタスクはすべて `wscript.exe` + VBS の非表示ランチャーで起動
 （ウィンドウ点滅なし）。`install_autostart.ps1` で一括登録。

@@ -78,7 +78,7 @@ python scripts\verify_connectivity.py
 | Agent | 接入方式 | 主动上报 | 语音回写确认 |
 |---|---|---|---|
 | codex | `~/.codex/hooks.json` → `agents/codex_hook.py`；`config.toml` `bypass_hook_trust=true`、`[windows] sandbox='unelevated'` | ✅ 桌面+CLI | ❌（在 codex 界面确认） |
-| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`；`agents/confirm_mcp.py` | ✅ | ✅ 完整回环 |
+| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`；可见窗口经 `agents/claude_visible_run.py` 上报完成；`agents/confirm_mcp.py` | ✅ | ✅ 完整回环 |
 | agy / Antigravity | `~/.gemini/config/hooks.json` `fusion` 段 → `agents/antigravity_hook.py` | ✅ CLI 归属 agent=agy | ❌ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → 网关 | ✅ | ❌ |
 
@@ -105,7 +105,7 @@ python scripts\verify_connectivity.py
 | xiaozhi-esp32-server (Docker) | 8000/8003 | 备用链路 |
 | mcp-endpoint-server (Docker) | 8004 | 备用链路 MCP 端点 |
 | funnel_proxy.py | 8090 | 备用路由（开机自启 + 5 分钟自愈） |
-| 系统托盘 | — | 状态监视 + 网关守护（单实例保护） |
+| 系统托盘 | — | 状态监视 + 网关守护（单实例保护）+ 队列操作菜单（查看/清空） |
 
 守护与计划任务全部经 `wscript.exe` + VBS 隐藏启动（无弹窗），`install_autostart.ps1` 一键注册。
 

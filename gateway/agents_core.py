@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 import uuid
@@ -243,12 +244,12 @@ VISIBLE_DIR = ROOT / "state" / "visible_runs"
 VISIBLE_SPECS: dict = {
     "codex": {"cmd": ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust"],
               "workdir": str(PROJECT_ROOT), "title": "Codex-Asong"},
-    "claude": {"cmd": ["claude", "-p"],
-               "workdir": str(Path.home()), "title": "ClaudeCode-Asong"},
+    "claude": {"cmd": [sys.executable, str(ROOT.parent / "agents" / "claude_visible_run.py")],
+               "workdir": str(PROJECT_ROOT), "title": "ClaudeCode-Asong"},
     "agy": {"cmd": ["agy", "--prompt-interactive"],
             "workdir": str(PROJECT_ROOT), "title": "Antigravity-Asong"},
     "pi": {"cmd": ["pi", "--no-context-files"],
-           "workdir": str(Path.home()), "title": "pi-Asong"},
+           "workdir": str(PROJECT_ROOT), "title": "pi-Asong"},
 }
 
 

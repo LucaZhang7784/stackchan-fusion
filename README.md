@@ -1,344 +1,151 @@
-﻿# StackChan 融合方案 — fusion.firmware.0731
+# StackChan 融合方案
 
-日期: 2026-08-01
-范围: 把「xiaozhi.me 云智能体 + Tailscale」与「stackchan 机器人工具能力」融合,
-打通 **机器人 <-> agy / pi / claude / codex 四 agent 双向通讯**。
+让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
+**codex / claude / agy / pi** 四类 AI agent：查询状态、派发任务、播报结果、语音确认。
 
-> 当前主链路（2026-08-01 已实测）: 机器人走 xiaozhi.me 云 STACK 智能体,
-> 经 xiaozhi-mcp bridge 连接本机 fusion-gateway, 再由 **Docker MCP Toolkit**
-> 统一暴露给 Codex / Claude Code / VS Code。自建 xiaozhi-esp32-server 链路保留备用。
+> 核心思路（2026-08-03）：**云链路 + 唤醒播报**。机器人走 xiaozhi.me 云端智能体，
+> 每次唤醒自动检查待播报消息并逐条念出；机器人派发的任务在 **agent 自己的可见窗口**
+> 执行，结果经 hooks 回流到机器人。自建 xiaozhi-esp32-server 链路保留为备用。
 
-> **新电脑 / 新机器人部署**: 见 [DEPLOY.md](DEPLOY.md)（含全部占位符配置与验证步骤）。
-
-## 一、结论(先看这里)
-
-1. **机器人固件**: M5Stack 官方固件（已解绑激活码），xiaozhi.me 云绑定 STACK 智能体。
-2. **机器人 -> agent**: 云 LLM 经 xiaozhi-mcp bridge（wss 接入点）拿到本地 8 个工具
-   （agent_status / agent_query / agent_pending / agent_confirm / claude_query /
-   codex_query / docker_status / agent_result_check），语音指令直接驱动本地 agent。
-3. **agent -> 机器人**: agent 事件经网关排队，机器人唤醒后由 LLM 调 agent_pending 播报
-   （云链路无推送通道；自建 xiaozhi-esp32-server 链路可用 robot_say 主动推送）。
-4. **电脑端接入**: Docker MCP Toolkit（profile=stackchan）统一暴露 11 个网关工具给
-   Codex / Claude Code / VS Code，客户端零配置直接可用。
-5. **连通性验证**: 网关 /healthz + `docker mcp gateway run --dry-run` +
-   机器人语音实测（例: 问「codex 状态」→ 机器人播报「codex 状态正常」）。
-
-## 二、架构
+## 架构
 
 ```
-                 ┌──────────────────────── 本机 (Windows) ────────────────────────┐
- 机器人(ESP32)   │  Docker: xiaozhi-esp32-server (8000/8003)                      │
- 官方固件2.2.6   │    ├─ SERVER_MCP ──► fusion_gateway.py (8010, Bearer 认证)      │
-   │ 出站 WSS    │    └─ MCP接入点 ──► mcp-endpoint-server (8004, 旧bridge仍挂着)  │
-   ▼            │                                 ▲                               │
- Funnel 443     │        ┌────────────────────────┴───────────────┐               │
- (Tailscale)    │  Codex / Claude Code  (MCP client -> 8010)       │               │
-                │    robot_say / robot_status / codex_query ...    │               │
-                └──────────────────────────────────────────────────┘               │
-```
-
-- 网关两种用法: `--http` 给 xiaozhi SERVER_MCP 与 Claude Code(http MCP); `--stdio` 给 Codex CLI/其他 stdio 客户端。
-- HTTP 模式强制 `Authorization: Bearer <token>`(fail-closed), 只有 `/healthz` 免认证。
-
-## 三、文件清单
-
-| 路径 | 说明 |
-|---|---|
-| gateway/fusion_gateway.py | 融合网关主程序(单文件, 无框架依赖) |
-| gateway/config.json | 实际配置(OTA/MAC/health key/token/端口) |
-| gateway/agents_core.py | 多 agent 管理核心(agy/pi/claude/codex) + 事件/确认存储 |
-| gateway/run_gateway.ps1 / stop_gateway.ps1 | 网关启停 |
-| gateway/watchdog_gateway.ps1 | 网关守护(每 2 分钟检查, 挂了自动拉起) |
-| gateway/fusion_tray.ps1 | 系统托盘状态工具(网关/MCP/机器人三色状态) |
-| gateway/install_autostart.ps1 | 一键注册: 网关自启 + watchdog + 托盘 |
-| docker/fusion-gateway.yaml | MCP Toolkit server 定义(remote + streamable-http + Bearer) |
-| docker/mcp-toolkit-profile.json | profile `stackchan` 导出(迁移用) |
-| docker/host-executor.py | Windows 宿主执行器(容器内 gateway 调本地 CLI 用) |
-| docker/run_executor.ps1 / install_executor_task.ps1 | 执行器启动 + 自启 |
-| docker/MCP-Toolkit接入说明.md | Toolkit 接入/验证完整文档 |
-| gateway/守护与托盘说明.md | 守护与托盘使用说明 |
-| server/.mcp_server_settings.json | 给 xiaozhi 的 SERVER_MCP 新配置(streamable-http) |
-| server/deploy_server_mcp.ps1 | SERVER_MCP 配置部署(备份->替换->重启->验证/回滚) |
-| server/deploy_fusion_push.ps1 | 一键部署: 推送补丁挂载 + fusion_secret + SERVER_MCP + 容器重建 |
-| server-patch/core/*.py | 服务器补丁(connection 注册表 / http_server /api/push) |
-| server-patch/docker-compose.fusion.yml | 补丁覆盖挂载(与主 compose 一起用) |
-| server/prompt_patch.md | 提示词补丁: 唤醒后检查待播报消息 |
-| scripts/verify_connectivity.py | 分层连通性验证 |
-| scripts/stop_legacy_bridge.ps1 | 停止已废弃的旧 bridge.js |
-| tests/test_gateway.py | 网关自检(stdio JSON-RPC) |
-| firmware/remote_wakeup_v2.md | v2 主动播报路线分析(A/B/C) |
-| package-stackchan.zip | 全量迁移包(固件 + PC 端全套 + README) |
-
-## 四、部署步骤
-
-```powershell
-# 1. 启动网关
-powershell -ExecutionPolicy Bypass -File D:\ProcessCenter\StackChan\fusion.firmware.0731\gateway\run_gateway.ps1
-
-# 2. 网关自检
-python D:\ProcessCenter\StackChan\fusion.firmware.0731\tests\test_gateway.py
-
-# 3. 部署到 xiaozhi server (SERVER_MCP 注册 + 推送补丁 /api/push, 自动停/启容器, 带备份与回滚)
-powershell -ExecutionPolicy Bypass -File D:\ProcessCenter\StackChan\fusion.firmware.0731\server\deploy_server_mcp.ps1
-
-# 4. (可选)提示词补丁, 让机器人唤醒后主动取消息
-#    按 server/prompt_patch.md 操作后重启容器
-
-# 5. 连通性验证
-python D:\ProcessCenter\StackChan\fusion.firmware.0731\scripts\verify_connectivity.py
-```
-
-## 五、Agent 侧接入方式
-
-**推荐方式（当前在用）**: Docker MCP Toolkit 统一接入, 见第九章。
-客户端配置由 `docker mcp client connect` 自动写入:
-
-- Codex: `~/.codex/config.toml` → `[mcp_servers.MCP_DOCKER]`
-- Claude Code: `~/.claude.json` → `MCP_DOCKER`
-- VS Code: `<项目根>/.vscode/mcp.json` → `MCP_DOCKER`
-
-**直连方式（备选）**:
-
-- Claude Code:
-  ```
-  claude mcp add --transport http fusion http://127.0.0.1:8010/mcp
-  ```
-  (若 CLI 需要头: 配置 headers Authorization: Bearer f5c9a1e0-...)
-- Codex CLI (~/.codex/config.toml):
-  ```toml
-  [mcp_servers.fusion]
-  command = "python"
-  args = ["D:/ProcessCenter/StackChan/fusion.firmware.0731/gateway/fusion_gateway.py", "--transport", "stdio"]
-  ```
-- 注意: Codex 已换回 CLI 版 (0.146.0, 可后台启动), 商店版 Access denied 问题已解决。
-
-## 六、故障排查
-
-| 症状 | 检查 |
-|---|---|
-| 服务器日志 `服务端MCP客户端已连接，可用工具: []` | 网关没起/容器连不上 8010/token 不匹配 |
-| `unhandled errors in a TaskGroup` | 旧 `type:"ws"` 配置仍在(本方案已替换); 或网关地址不可达 |
-| 机器人听不到任何播报 | 先跑 verify_connectivity.py, 再人工唤醒对话 |
-| 想停旧 bridge | scripts/stop_legacy_bridge.ps1 -Kill (guard 可能拉起, 需同时停 guard) |
-| Tailscale 重连后网关不可达 | 容器内连的是 100.69.221.25:8010, 确保 Tailscale IP 未变 |
-
-## 六.5、部署状态 (2026-08-01 实测)
-
-| 环节 | 状态 |
-|---|---|
-| xiaozhi.me 云 STACK 智能体 | ✅ 设备 ID 2466458 已绑定, 智能体 STACK |
-| xiaozhi-mcp bridge (wss) | ✅ 运行中, 8 工具, 心跳正常(每 60s Ping) |
-| 融合网关 (8010, Bearer 认证) | ✅ 运行中, /healthz 200, 11 工具 |
-| Docker MCP Toolkit | ✅ profile stackchan 完整加载, 19 工具可见 |
-| Codex / Claude Code / VS Code 客户端 | ✅ 全部 connected (MCP_DOCKER) |
-| agent 探测 | ✅ claude 2.1.220 / codex 0.146.0 / agy 1.1.9 / pi 0.80.3 |
-| 端到端工具调用 | ✅ agent_query(pi, "1+1") → 2 |
-| 机器人语音实测 | ✅ 「查 codex 状态」→ 机器人播报「codex 状态正常」 |
-| 网关守护 + 托盘 | ✅ watchdog 实测 kill 后 6s 自动拉起; 托盘三色状态正常 |
-
-部署中修掉的三个坑:
-1. .ps1 中文乱码 → 所有脚本改存 UTF-8 BOM。
-2. .config.yaml 曾被 ANSI 读取写坏 → 已从备份恢复, 部署脚本改用 .NET UTF-8 读写。
-3. FastMCP 1.28 两个坑: 外层包装必须传播内层 lifespan; 传输安全默认拒绝非 localhost 的 Host 头(421) → 已加 allowed_hosts。
-
-另修: MCP Toolkit profile 缺 `description` 字段导致 UI "Failed to load profiles" →
-补齐 description/icon/readme/metadata 后正常加载。
-
-## 七、已知边界
-
-- v1 的 agent->机器人是「队列+唤醒播报」, 不是打断式推送; 真·主动播报见 firmware/remote_wakeup_v2.md。
-- MQTT 远程唤醒(官方路径)在本网络(AP隔离+Funnel 不支持 UDP/1883)下不可行, 除非 MQTT 上公网。
-- M5Stack 官方固件原生已有 8 个设备工具(音量/屏幕/LED/拍照 self.camera.take_photo 等), 已并入函数列表。
-- codex 间歇性 Access denied 修复(2026-08-03): `~/.codex/config.toml` 的
-  `[windows] sandbox` 已从 `elevated` 改为 `unelevated`——elevated 会让 codex
-  尝试提权沙箱用户(CreateProcessAsUserW), 从非提权进程(gateway/桥接)代跑时
-  间歇性报错「Access is denied / 看不到进程」。
-
----
-
-## 八、多 Agent 双向通话 (v2, 2026-08-01)
-
-机器人 ↔ 本机 4 个 agent 及其 VS Code 插件双向通讯:
-**agy (Antigravity CLI) / pi (pi-coding-agent) / claude (Claude Code CLI) / codex (Codex CLI)**。
-
-### 架构
-
-```
-机器人(云端 STACK 智能体 / 自建 docker 两用)
-   │ 语音
+机器人 (M5Stack CoreS3, 固件 v1.0.2-micfix, 唤醒词「阿松」)
+   │ 语音 (ASR/LLM/TTS 在 xiaozhi.me 云端)
    ▼
-xiaozhi LLM ──工具调用──► xiaozhi-mcp bridge (云) 或 融合网关 (自建)
-                              │ agents_core.py (共享事件/确认存储)
-                              │
-        ┌─────────────────────┼──────────────────────┐
-        ▼                     ▼                      ▼
-   agent_query            agent_pending         agent_confirm
-   (agy/pi/claude/codex   (待播报事件+待确认问题)  (语音回答回写)
-    无头执行, 记 done 事件)
-                              ▲
-   agent 侧事件 ──► 融合网关 POST /api/agent_event (hooks/包装器上报)
-   claude 权限确认 ──► agents/confirm_mcp.py (permission-prompt-tool)
+xiaozhi.me 云智能体 (STACK, 提示词见 prompt-阿松-v2.md)
+   │ MCP (wss://api.xiaozhi.me/mcp)
+   ▼
+xiaozhi-mcp 云桥接 (mcp_pipe.py + server.py, 本机)
+   │ agent_status / agent_query / agent_pending / agent_confirm / agent_result_check ...
+   ▼
+融合网关 fusion_gateway.py (:8010, Bearer 认证)
+   │
+   ├── codex   (hooks: 任务开始/完成/需审批 → 机器人)
+   ├── claude  (hooks + confirm_mcp 确认回环)
+   ├── agy     (Antigravity fusion hooks, CLI 归属 agent=agy)
+   └── pi      (扩展 hooks-bridge.ts)
+        └── 机器人任务 → agent 自己的可见窗口执行 (Codex-Asong / ClaudeCode-Asong / ...)
 ```
 
-### 工具清单 (云 bridge 8 个 / 网关 11 个)
+两条链路：
 
-| 工具 | 说明 |
+| 链路 | 说明 |
 |---|---|
-| agent_status(agent=all) | 4 个 agent 的 CLI 可用性/运行进程/待确认数/最近事件 |
-| agent_query(agent, task) | 无头执行 agy/pi/claude/codex, 结果进事件+outbox |
-| agent_pending(clear) | 机器人端读待播报事件与待确认问题 |
-| agent_confirm(agent, answer) | 把用户语音回答回写给等待中的 agent |
-| claude_query / codex_query / docker_status / robot_say / robot_pending | v1 工具保留 |
+| 云链路（主） | 机器人语音走 xiaozhi.me；agent 事件经网关排队，唤醒后播报 |
+| 自建链路（备用） | 本机 docker xiaozhi-esp32-server + Tailscale Funnel；支持 `robot_say` 真推送 |
 
-### 确认回环 (claude 权限请求 → 机器人 → 语音回答 → claude)
+## 功能
 
-- `agents/confirm_mcp.py`: MCP 服务端, 作为 claude `--permission-prompt-tool`
-- `agents/claude_run.py`: 包装器, 自动带 confirm MCP 运行 `claude -p`
-- `agents/claude_hook.py` + `install_claude_hooks.ps1`: 给 ~/.claude/settings.json
-  装 Stop/SessionEnd/Notification hooks, VS Code 里的 claude 会话也会上报
-- 流程: claude 要权限 → confirm_mcp 注册问题 → 网关排队(自建可推送) →
-  机器人唤醒后 LLM 读 agent_pending 念出 → 用户回答 → LLM 调 agent_confirm →
-  回答写回 reply_file → confirm_mcp 返回 allow/deny → claude 继续
+| 能力 | 说明 |
+|---|---|
+| 唤醒播报 | 每次唤醒第一动作查 `agent_pending`，有消息逐条念、念完清除 |
+| 状态查询 | 「检查 XX 状态」→ `agent_status`（4 个 agent 可用性/进程/最近事件，<5s） |
+| 任务执行 | 「让 XX 做…」→ `agent_query`，在 agent 自己的可见窗口执行，结果回流播报 |
+| 确认回环 | claude 权限请求 → 机器人念问题 → 语音回答 → 回写 allow/deny（claude 完整支持） |
+| 设备控制 | 点头/摇头/转向/表情/拍照/LED（固件自动跟随状态灯） |
 
-### 用法
+## 快速开始
+
+### 新电脑 / 新机器人
+
+完整部署步骤（含全部占位符配置、刷固件、配网、xiaozhi.me 绑定、四 agent hooks）见 **[DEPLOY.md](DEPLOY.md)**。
+
+### 本机服务
 
 ```powershell
-# claude 带确认回环
-python D:\ProcessCenter\StackChan\fusion.firmware.0731\agents\claude_run.py "任务描述" "工作目录"
-# 给 VS Code/终端 claude 会话装 hooks
-powershell -ExecutionPolicy Bypass -File D:\ProcessCenter\StackChan\fusion.firmware.0731\agents\install_claude_hooks.ps1
+# 融合网关 (:8010, 必须)
+powershell -ExecutionPolicy Bypass -File gateway\run_gateway.ps1
+# 云桥接 (机器人走 xiaozhi.me 时, 必须)
+powershell -ExecutionPolicy Bypass -File xiaozhi-mcp\run_bridge.ps1
+# 备用链路容器 (可选)
+docker compose -f server\docker-compose.fusion.yml up -d
+# 托盘 + 自启 (可选)
+powershell -ExecutionPolicy Bypass -File gateway\install_autostart.ps1
 ```
 
-### 云端 STACK 智能体角色介绍(已贴入 xiaozhi.me 控制台, 唤醒词「阿松」)
-
-```
-我叫阿松，桌面陪伴 AI，活泼可爱、口语自然，回复 1-2 句话不超过 50 字。
-不要输出 markdown、列表、emoji，内容要适合语音朗读。
-
-【唤醒优先规则】(最重要，每次唤醒都要执行)
-- 每次被唤醒/会话开始后，第一动作先调用 agent_pending(clear=false) 检查有没有待播报消息，不要等用户问。
-- 有消息：优先逐条念给用户，每条压缩成 1-2 句口语，不要念路径/代码/markdown 原文；超过 3 条先念最新的 3 条并补一句"还有 N 条"；念完后调用 agent_pending(clear=true) 清除，避免下次重复。
-- 返回为空：正常打招呼/对话，不要主动说"没有消息"。
-
-工具规则：
-- 用户问/查/看「XX 的状态 / 在不在 / 可用吗 / 跑没跑 / 环境怎么样」：调 agent_status（XX 可选 agy/pi/claude/codex 或 all）——**查询状态绝不调用 agent_query**
-- 只有「让/叫 XX 去做 / 执行 / 写 / 查 / 检查某件事」才调 agent_query(agent, task)，立刻口语回复"正在执行，稍后问结果"；任务会在电脑上打开对应 agent 的窗口执行
-- 用户问「有没有消息/待办/谁找我」：先调 agent_pending(clear=false) 把内容念出来，念完再调 agent_pending(clear=true) 清空，避免重复
-- 用户回答 agent 的待确认问题（允许/拒绝/补充说明）：调 agent_confirm(agent, 回答) 回传给该 agent
-- 用户问「结果出来了吗/写完了吗」：调 agent_result_check 取完整结果；结果很长时只念开头结论
-- 用户问 Docker/容器/服务状态：调 docker_status
-- 简单问答、闲聊：直接回答，不要调用 agent 工具
-- LED 灯环已由固件自动跟随状态（待机暖橙/聆听蓝/播报绿），无需调用 LED 工具；用户明确要求颜色时再考虑
-
-设备控制（仅当以下工具可见时使用）：
-- 点头 self.head.nod / 摇头 self.head.shake / 转向 self.head.move(yaw,pitch)
-- 表情 self.face.expression / 拍照 self.camera.take_photo
-- 指定灯色 self.led.set_color(r,g,b)
-```
-
-> prompt 全文见 `prompt-阿松-v2.md`（2026-08-03 起启用「唤醒优先规则」:
-> 每次唤醒自动查 agent_pending 并逐条播报, 念完 clear=true 清除）。
-
-> 注: 当前固件为基于 esp32 的修改版 v1.0.2-micfix(以 07.31 已跑通的
-> `reference/stackchan-xiaozhi-firmware` 为基座, 保留唤醒词「阿松」+ LED 状态灯,
-> 仅改麦克风增益 30→42 修复语音识别), 烧录文件见 `firmware/post-fw-v1.0.2-micfix/`
-> (app-only 刷 xiaozhi.bin @ 0x410000 即可, 无需擦除重配)。
-
-### 已知边界
-
-- 云链路无推送通道: agent 事件在网关排队, 机器人**唤醒后**由 LLM 读
-  agent_pending 播报(非打断式); 自建链路可用 robot_say 推送。
-- 确认回环完整支持 claude (permission-prompt-tool); agy/pi 无头查询可用,
-  交互式确认待其 CLI 支持; codex CLI 查询可用, 确认机制待官方支持。
-- pi 必须 `--no-context-files` 且 workdir=用户主目录(某些目录下会报
-  "content is not iterable")。
-- VS Code 插件: claude 扩展经 hooks 上报; pi 扩展无 hooks 暂未接入。
-
----
-
-## 九、Docker MCP Toolkit 统一接入 (2026-08-01)
-
-使用 Docker Desktop 内置的 **MCP Toolkit**（`docker mcp` CLI）作为统一 MCP 网关，
-把本机 fusion-gateway（localhost:8010，11 个工具）暴露给
-**Codex / Claude Code / VS Code**，客户端只需连接一个 `MCP_DOCKER` 入口。
-
-### 9.1 结构
-
-```
-Codex Desktop / Claude Code CLI / VS Code MCP
-        │  stdio: docker mcp gateway run --profile stackchan
-        ▼
-Docker MCP Gateway (Toolkit, profile=stackchan)
-        │  streamable-http: http://localhost:8010/mcp + Bearer
-        ▼
-fusion_gateway.py (Windows, :8010, 11 工具)
-        │  agent_query / agent_status / agent_pending / agent_confirm ...
-        ▼
-agents_core.py → agy / pi / claude / codex CLI
-```
-
-### 9.2 关键文件
-
-| 路径 | 说明 |
-|---|---|
-| pc/docker/fusion-gateway.yaml | MCP Toolkit server 定义(remote + streamable-http + Bearer) |
-| pc/docker/mcp-toolkit-profile.json | profile `stackchan` 导出(迁移用) |
-| pc/docker/MCP-Toolkit接入说明.md | 完整接入/验证步骤 |
-| pc/gateway/watchdog_gateway.ps1 | 网关守护(每 2 分钟检查, 挂了自动拉起) |
-| pc/gateway/fusion_tray.ps1 | 系统托盘状态工具(网关/MCP/机器人三色状态) |
-| pc/gateway/守护与托盘说明.md | 守护与托盘使用说明 |
-
-### 9.3 环境要求
-
-- Docker Desktop 4.62+（实测 4.84.0）
-- 环境变量（用户级）: `DOCKER_MCP_ALLOW_INSECURE_REMOTE_URLS=1`
-  （允许 Toolkit 经 http 连接本地 fusion-gateway；Toolkit 默认强制 https）
-- fusion-gateway 必须运行: `pc/gateway/run_gateway.ps1`
-
-### 9.4 迁移到新电脑
+### 验证
 
 ```powershell
-# 1) 安装依赖
-pip install mcp uvicorn starlette websockets python-dotenv
-
-# 2) 拷贝 pc/docker/fusion-gateway.yaml 到新电脑
-Copy-Item .\pc\docker\fusion-gateway.yaml $HOME\.docker\mcp\catalogs\
-
-# 3) 导入 profile（含 endpoint/Bearer 配置）
-docker mcp profile import .\pc\docker\mcp-toolkit-profile.json
-
-# 4) 设置环境变量并连接客户端
-[Environment]::SetEnvironmentVariable('DOCKER_MCP_ALLOW_INSECURE_REMOTE_URLS','1','User')
-docker mcp client connect codex --global --profile stackchan
-docker mcp client connect claude-code --global --profile stackchan
-# (VS Code 在项目根) docker mcp client connect vscode --profile stackchan
-
-# 5) 启动网关 + 守护 + 托盘
-powershell -NoProfile -ExecutionPolicy Bypass -File .\pc\gateway\install_autostart.ps1
+python scripts\verify_connectivity.py
 ```
 
-> 注意: profile 中带有 Bearer token（对应 gateway/config.json 的 auth_token），
-> 换机后两处需保持一致。新电脑的 xiaozhi-mcp/.env 需填自己的 MCP_ENDPOINT。
+全部 PASS 后：对机器人说「阿松」唤醒 → 应自动播报待办；说「检查 agent 状态」→ 播报四 agent；
+说「让 codex 总结项目」→ 桌面弹出 Codex 窗口执行 → 完成后唤醒机器人听结果。
 
-### 9.5 守护与托盘（本机已启用）
+## 四 Agent 接入
 
-两个计划任务（install_autostart.ps1 一键注册，均带 `-WindowStyle Hidden` 静默运行）:
+| Agent | 接入方式 | 主动上报 | 语音回写确认 |
+|---|---|---|---|
+| codex | `~/.codex/hooks.json` → `agents/codex_hook.py`；`config.toml` `bypass_hook_trust=true`、`[windows] sandbox='unelevated'` | ✅ 桌面+CLI | ❌（在 codex 界面确认） |
+| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`；`agents/confirm_mcp.py` | ✅ | ✅ 完整回环 |
+| agy / Antigravity | `~/.gemini/config/hooks.json` `fusion` 段 → `agents/antigravity_hook.py` | ✅ CLI 归属 agent=agy | ❌ |
+| pi | `~/.pi/agent/extensions/hooks-bridge.ts` → 网关 | ✅ | ❌ |
 
-| 任务 | 触发 | 内容 |
+任务执行方式：`agent_query` 打开 agent 自己的可见控制台窗口（标题 `Codex-Asong` /
+`ClaudeCode-Asong` / `Antigravity-Asong` / `pi-Asong`，脚本存于 `gateway/state/visible_runs/`），
+结果经各 agent hooks 写入网关，机器人唤醒后播报。
+
+## 机器人固件
+
+- 当前：**v1.0.2-micfix**（`firmware/post-fw-v1.0.2-micfix/`）
+- 基座：07.31 已跑通的 `reference/stackchan-xiaozhi-firmware`（heavenchenggong 系，
+  含「阿松」+ LED 补丁；**不要用 HtSz 主分支**——有 bug 起不来）
+- 改动：麦克风输入增益 30→42（修复语音识别差）；唤醒词「阿松」；分区 post-fw
+  （app @ 0x410000，16MB）
+- 升级：app-only 刷 `xiaozhi.bin @ 0x410000`，保留配置（`firmware/post-fw-v1.0.2-micfix/flash_post_fw.ps1`）
+- 构建：espressif/idf:v5.5.2（5.5.4 会黑屏），流程见 `firmware/build_led_ci.sh`
+
+## 服务与运维
+
+| 服务 | 端口 | 说明 |
 |---|---|---|
-| StackChan-FusionGateway | 登录时 | 启动网关（静默） |
-| StackChan-FusionTray | 登录时 | 系统托盘状态工具 |
+| 融合网关 | 8010 | 11 个 MCP 工具，Bearer 认证 |
+| xiaozhi-mcp 云桥接 | — | mcp_pipe.py + server.py，心跳 60s |
+| xiaozhi-esp32-server (Docker) | 8000/8003 | 备用链路 |
+| mcp-endpoint-server (Docker) | 8004 | 备用链路 MCP 端点 |
+| funnel_proxy.py | 8090 | 备用路由（开机自启 + 5 分钟自愈） |
+| 系统托盘 | — | 状态监视 + 网关守护（单实例保护） |
 
-托盘每 5 秒轮询: 网关 /healthz、MCP profile、机器人 bridge 心跳,
-图标绿色=全正常 / 橙色=部分异常 / 红色=网关离线, 状态变化弹气泡提醒,
-右键可查看详情、重启网关、退出托盘。详见 gateway/守护与托盘说明.md。
+守护与计划任务全部经 `wscript.exe` + VBS 隐藏启动（无弹窗），`install_autostart.ps1` 一键注册。
 
-**守护逻辑内置于托盘**: 检测到网关离线会自动静默拉起（30 秒防抖），
-不依赖任何定时计划任务，因此不会定时弹 PowerShell 窗口。
-详见 gateway/守护与托盘说明.md。
+## 故障排查
 
-### 9.6 备份与打包
+| 症状 | 处理 |
+|---|---|
+| 「检查 agent 状态」超时 | 网关/桥接未启动；探测已缓存 120s + 并发（<5s） |
+| codex 窗口报 Access denied | `~/.codex/config.toml` `[windows] sandbox='unelevated'`；不要加 `--sandbox workspace-write` |
+| 中文任务乱码 | hook 脚本读 UTF-8；`mcp_pipe` 子进程 `PYTHONUTF8=1`（已修复，重启 codex 桌面生效） |
+| 机器人念陈旧结果 | `agent_result_check` 只返回 30 分钟内新结果（已修复） |
+| 托盘两个图标 | `fusion_tray.ps1` 单实例保护（已修复） |
+| 机器人不播报 | 确认已唤醒 + 云智能体 prompt 是 v2（`prompt-阿松-v2.md`） |
 
-`package_stackchan.py` 一键生成 `package-stackchan/` + `package-stackchan.zip`
-（含固件 7 个 bin、PC 端 gateway/xiaozhi-mcp/agents/docker 全套、README），
-密钥自动替换为占位符。迁移用 zip 即可, 见 9.4。
+## 已知边界
+
+- 云链路**无打断式推送**：agent 事件排队，机器人唤醒后经 `agent_pending` 播报；
+  自建链路才支持 `robot_say` 真推送。
+- Codex / Antigravity 桌面应用与 VS Code 插件面板的**内部会话无法外部注入**；
+  机器人任务在对应 CLI 窗口执行，插件会话仍经 hooks 上报事件。
+- 确认回环仅 claude 完整（`--permission-prompt-tool` + `confirm_mcp`）；
+  codex/agy/pi 只上报「需要确认」，回写需在 agent 界面完成。
+- 语音端到端延迟约 1.5–2.5s（云端 ASR/LLM/TTS 所致），非打断式播报可接受。
+
+## 版本记录
+
+### v08.03（2026-08-03）
+
+- 云链路 + 唤醒播报（prompt v2、agent_pending 唤醒优先规则）
+- 固件 v1.0.2-micfix（麦克风增益 42，识别修复）
+- 四 agent hooks 全部打通（codex/claude/agy/pi），可见窗口执行
+- 修复：codex Access denied、agent_status 超时（13.9s→4.8s）、中文乱码、陈旧结果、
+  托盘双图标、计划任务弹窗
+- 归档：`version.08.03/`（含当日全量包）
+
+历史版本：`firmware/post-fw-v1.0.0-led`（07.31 跑通版，可回退）。
+
+## 敏感信息
+
+本仓库**不含任何真实凭据**：token / API key / MAC / 域名均为占位符
+（`YOUR_*` / `AA:BB:CC:DD:EE:FF`）。真实值只存在于本机 `.env`、`config.json`、
+docker 配置。`.gitignore` 已忽略所有运行时敏感文件。
+部署时按 [DEPLOY.md](DEPLOY.md) 第 4 节逐项替换。

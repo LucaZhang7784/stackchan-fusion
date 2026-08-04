@@ -71,9 +71,9 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 - 文件: `fusion.firmware.0731/prompt-阿松-v3.md`（需贴入 xiaozhi.me 控制台; v2 保留存档）
 - 核心规则:
-  - **强制普通话**（严禁粤语/方言/英文混排——修复智能体用粤语回复的问题）
+  - **回复语言跟随 xiaozhi.me 智能体/音色预设**（预设粤语就用粤语，预设普通话就用普通话，不强制）
   - 唤醒优先（每次唤醒先 agent_pending, 逐条播报, clear=true）
-  - **ASR 容错关键词兜底**: 听错时按关键词推断意图——「播报/消息/队列/待办」→ agent_pending;
+  - **ASR 容错意图兜底**: 听错时按"意思"推断（不分普通话/粤语/方言）——「播报/消息/队列/待办」→ agent_pending;
     「状态/在干嘛/进程」→ agent_status; 「结果/完了吗」→ agent_result_check;
     「可以/拒绝」→ agent_confirm; 「docker/容器」→ docker_status
   - 禁止把「播报消息/查状态」理解成点歌/搜索; 听不清回「再说一遍」

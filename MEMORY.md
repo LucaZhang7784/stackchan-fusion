@@ -28,7 +28,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 | 服务 | 端口 | 状态 |
 |---|---|---|
 | 融合网关 fusion_gateway.py | 8010 | ✅ /healthz ok, 11 工具 |
-| xiaozhi-mcp 云桥接 (mcp_pipe + server.py) | — | ✅ 心跳 60s 正常 |
+| xiaozhi-mcp 云桥接 (mcp_pipe + server.py) | — | ✅ 心跳 60s 正常; 开机自启任务 StackChan-CloudBridge(wscript 隐藏) |
 | xiaozhi-esp32-server (Docker, 备用) | 8000/8003 | ✅ Up healthy |
 | mcp-endpoint-server (Docker) | 8004 | ✅ Up healthy |
 | xiaozhi web / redis / db | 8002/6379/3306 | ✅ Up |
@@ -93,6 +93,8 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 - [ ] Phase 5 可选: 云端空闲自查（非打断）; 桌面应用会话注入（等 codex remote-control 稳定）
 - [ ] 机器人目前可能待机, 需唤醒后再验证
 - [ ] 重新启用 auth（MAC 白名单空 token bug, 可选）
+- [x] 2026-08-04 修: 电脑重启后云桥接不自启导致机器人离线——已注册
+      StackChan-CloudBridge 登录自启任务(run_bridge_hidden.vbs), install_autostart.ps1 同步。
 
 ## 八、常用命令
 

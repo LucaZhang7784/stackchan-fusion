@@ -4,7 +4,7 @@ Add-Type -AssemblyName System.Drawing
 
 # 单实例保护: 已有托盘在跑(排除自身)则直接退出, 避免双图标
 $existingTray = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" |
-    Where-Object { $_.CommandLine -match 'fusion_tray\.ps1' -and $_.ProcessId -ne $PID }
+    Where-Object { $_.CommandLine -match '(?i)-File\s+"?[^"]*fusion_tray\.ps1' -and $_.ProcessId -ne $PID }
 if ($existingTray) { exit 0 }
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -23,6 +23,7 @@ $confirmFile = Join-Path $root 'data\agent_confirmations.json'
 
 $script:lastState = ''              # 上一次总状态
 $script:lastRestartAt = [DateTime]::MinValue
+$script:lastBridgeRestartAt = [DateTime]::MinValue
 $script:gwOk = $false
 $script:mcpOk = $false
 $script:robotOk = $false
@@ -205,6 +206,22 @@ function Restore-GatewayIfDown {
     }
 }
 
+# 托盘内置守护: 云桥接挂了(进程<2 或心跳>3分钟)时静默拉起(防抖 30s)
+function Restore-BridgeIfDown {
+    param([bool]$bridgeOk)
+    if ($bridgeOk) { return }
+    if (((Get-Date) - $script:lastBridgeRestartAt).TotalSeconds -lt 30) { return }
+    $script:lastBridgeRestartAt = Get-Date
+    try {
+        $run = 'D:\ProcessCenter\StackChan\fusion.firmware.0731\xiaozhi-mcp\run_bridge.ps1'
+        Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$run`"") `
+            -WindowStyle Hidden | Out-Null
+    } catch {
+        try { Add-Content -LiteralPath (Join-Path $root 'state' 'watchdog.log') -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] tray bridge restart error: $($_.Exception.Message)" -Encoding UTF8 } catch { }
+    }
+}
+
 # ---------------------------------------------------------------- 图标
 function Get-StatusIcon {
     param([string]$state, [bool]$gw, [bool]$mcp, [bool]$robot)
@@ -383,12 +400,15 @@ function Build-Menu {
 
 # ---------------------------------------------------------------- 轮询
 function Update-Status {
+    # 保险: Explorer 重启/通知区异常时, 图标可能消失, 轮询时重新置可见
+    if ($notify -and -not $notify.Visible) { $notify.Visible = $true }
     $gwDetail = ''; $mcpDetail = ''; $robotDetail = ''
     $g = Test-Gateway -detailRef ([ref]$gwDetail)
     Restore-GatewayIfDown $g
     $m = Test-McpToolkit -detailRef ([ref]$mcpDetail)
     $bridge = Get-BridgeInfo
     $r = $bridge[2]
+    Restore-BridgeIfDown $r
 
     if ($g -and $m -and $r) {
         $state = 'ok';   $label = '全部正常'

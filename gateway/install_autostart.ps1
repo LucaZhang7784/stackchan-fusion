@@ -33,6 +33,11 @@ Register-ScheduledTask -TaskName 'StackChan-FunnelProxyWatchdog' `
     -Action $funnelAction -Trigger $funnelTriggers -Settings $funnelSettings -Force | Out-Null
 Write-Host '已注册 StackChan-FunnelProxyWatchdog(登录自启 + 5 分钟自愈, wscript 隐藏启动)'
 
+# 4) 云桥接(机器人走 xiaozhi.me 时必需, 电脑重启后自动拉起)
+$bridgeVbs = Join-Path (Split-Path -Parent $root) 'xiaozhi-mcp\run_bridge_hidden.vbs'
+Register-VbsTask 'StackChan-CloudBridge' $bridgeVbs `
+    (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
+
 Write-Host '全部注册完成。立即启动托盘...'
 $tray = Join-Path $root 'fusion_tray.ps1'
 $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$tray`"") -WindowStyle Hidden -PassThru

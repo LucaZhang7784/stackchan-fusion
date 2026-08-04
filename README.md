@@ -13,7 +13,7 @@
 机器人 (M5Stack CoreS3, 固件 v1.0.3-aec-wake, 唤醒词「阿松」)
    │ 语音 (ASR/LLM/TTS 在 xiaozhi.me 云端)
    ▼
-xiaozhi.me 云智能体 (STACK, 提示词见 prompt-阿松-v2.md)
+xiaozhi.me 云智能体 (STACK, 提示词见 prompt-阿松-v3.md)
    │ MCP (wss://api.xiaozhi.me/mcp)
    ▼
 xiaozhi-mcp 云桥接 (mcp_pipe.py + server.py, 本机)
@@ -121,7 +121,7 @@ python scripts\verify_connectivity.py
 | 中文任务乱码 | hook 脚本读 UTF-8；`mcp_pipe` 子进程 `PYTHONUTF8=1`（已修复，重启 codex 桌面生效） |
 | 机器人念陈旧结果 | `agent_result_check` 只返回 30 分钟内新结果（已修复） |
 | 托盘两个图标 | `fusion_tray.ps1` 单实例保护（已修复） |
-| 机器人不播报 | 确认已唤醒 + 云智能体 prompt 是 v2（`prompt-阿松-v2.md`） |
+| 机器人不播报 | 确认已唤醒 + 云智能体 prompt 是 v3（`prompt-阿松-v3.md`） |
 
 ## 已知边界
 

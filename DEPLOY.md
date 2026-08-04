@@ -47,7 +47,7 @@ python -m esptool --chip esp32s3 -b 460800 --port COMx `
 ### 1.3 绑定 xiaozhi.me（云链路）
 
 1. [xiaozhi.me](https://xiaozhi.me) 注册/登录，添加设备（记下**设备 ID**，机器人会播报）；
-2. 创建智能体（建议命名 STACK），**系统提示词**粘贴 `prompt-阿松-v2.md` 全文；
+2. 创建智能体（建议命名 STACK），**系统提示词**粘贴 `prompt-阿松-v3.md` 全文；
 3. 智能体 → MCP 设置 → **获取接入点**，得到 `wss://api.xiaozhi.me/mcp/?token=YOUR_TOKEN`；
 4. 把设备绑定到该智能体；唤醒词在固件里（本方案为「阿松」）。
 

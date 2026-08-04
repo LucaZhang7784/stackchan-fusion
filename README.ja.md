@@ -143,13 +143,26 @@ python scripts\verify_connectivity.py
 
 ## バージョン履歴
 
+### v08.04（2026-08-04）
+
+- クラウドブリッジ「自動起動 + keep alive」：StackChan-CloudBridge ログオンタスク
+  （wscript 非表示）；トレイ内蔵ブリッジ監視（プロセス/ハートビート異常時 30 秒以内に
+  非表示で再起動）
+- トレイ単一インスタンス保護を強化（`-File` の実インスタンスのみ判定）
+- ブリッジ起動チェーン全非表示（VBS → powershell Hidden → python Hidden）
+- トレイに「キュー操作」メニュー追加：キューメッセージ表示 / キュー消去（自動バックアップ）/
+  未回答の確認問題を消去
+
 ### v08.03（2026-08-03）
 
 - クラウドリンク + 起床時アナウンス（prompt v2、agent_pending 起床優先ルール）
 - ファームウェア v1.0.2-micfix（マイクゲイン 42、認識改善）
 - 4 エージェントの hooks 稼働（codex/claude/agy/pi）、可視ウィンドウ実行
+- claude 可視ウィンドウ完了イベント（`agents/claude_visible_run.py`：結果をイベント
+  キューと outbox の両方に書き込み、起床時アナウンスと「結果を聞く」の両方に対応）
 - 修正：codex Access denied、agent_status タイムアウト（13.9s→4.8s）、中国語文字化け、
-  古い結果の読み上げ、トレイ二重表示、スケジュールタスクのウィンドウ点滅
+  古い結果の読み上げ、claude 完了イベント欠落、claude/pi 作業ディレクトリ、
+  トレイ二重表示、スケジュールタスクのウィンドウ点滅
 - アーカイブ：`version.08.03/`（当日フルパッケージ）
 
 旧版：`firmware/post-fw-v1.0.0-led`（検証済み 07.31 ビルド、ロールバック可）。

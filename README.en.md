@@ -146,13 +146,27 @@ launchers (no flashing windows); `install_autostart.ps1` registers them.
 
 ## Version History
 
+### v08.04 (2026-08-04)
+
+- Cloud bridge "auto-start + keep-alive": StackChan-CloudBridge logon task
+  (wscript hidden); tray built-in bridge watchdog (silent restart within 30s
+  when processes/heartbeat fail)
+- Tray single-instance guard hardened (only real `-File` instances count)
+- Bridge startup chain fully silent (VBS → powershell Hidden → python Hidden)
+- Tray "Queue Ops" menu: show queue messages / clear queue (auto-backup) /
+  clear pending confirmations
+
 ### v08.03 (2026-08-03)
 
 - Cloud link + wake-up announcements (prompt v2, agent_pending wake-first rule)
 - Firmware v1.0.2-micfix (mic gain 42, recognition fix)
 - All four agent hooks live (codex/claude/agy/pi), visible-window execution
+- claude visible-window completion event (`agents/claude_visible_run.py`:
+  results go to both the event queue and the outbox, so wake-up announcements
+  and "ask for the result" both work)
 - Fixes: codex Access denied, agent_status timeout (13.9s→4.8s), garbled
-  Chinese, stale results, double tray icon, scheduled-task window flashes
+  Chinese, stale results, claude missing completion, claude/pi workdir,
+  double tray icon, scheduled-task window flashes
 - Archive: `version.08.03/` (full package of the day)
 
 Older: `firmware/post-fw-v1.0.0-led` (verified 07.31 build, can roll back).

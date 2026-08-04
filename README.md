@@ -132,13 +132,23 @@ python scripts\verify_connectivity.py
 
 ## 版本记录
 
+### v08.04（2026-08-04）
+
+- 云桥接「开机自启 + keep alive」：StackChan-CloudBridge 登录自启任务（wscript 隐藏）；
+  托盘内置桥接守护（进程/心跳异常 30 秒内静默拉起）
+- 托盘单实例守卫加固（只认 `-File` 真实实例，避免误杀）
+- 桥接启动链路全静默（VBS → powershell Hidden → python Hidden）
+- 托盘新增「队列操作」菜单：显示队列消息内容 / 清空队列（自动备份）/ 清空待确认
+
 ### v08.03（2026-08-03）
 
 - 云链路 + 唤醒播报（prompt v2、agent_pending 唤醒优先规则）
 - 固件 v1.0.2-micfix（麦克风增益 42，识别修复）
 - 四 agent hooks 全部打通（codex/claude/agy/pi），可见窗口执行
+- claude 可见窗口完成事件（`agents/claude_visible_run.py`：结果同时进事件队列与
+  outbox，唤醒播报 + 主动问结果两条路都通）
 - 修复：codex Access denied、agent_status 超时（13.9s→4.8s）、中文乱码、陈旧结果、
-  托盘双图标、计划任务弹窗
+  claude 无完成事件、claude/pi 工作目录、托盘双图标、计划任务弹窗
 - 归档：`version.08.03/`（含当日全量包）
 
 历史版本：`firmware/post-fw-v1.0.0-led`（07.31 跑通版，可回退）。

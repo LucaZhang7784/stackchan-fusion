@@ -95,14 +95,18 @@ agent's hooks and announced by the robot after wake-up.
 
 ## Robot Firmware
 
-- Current: **v1.0.3-aec-wake** (`firmware/post-fw-v1.0.3-aec-wake/`)
+- Current: **v1.0.6-ttsbuf** (`firmware/post-fw-v1.0.6-ttsbuf/`)
 - Base: the verified 07.31 `reference/stackchan-xiaozhi-firmware`
   (heavenchenggong lineage, includes "A Song" + LED patches; **do not use the
   HtSz main branch** — it has a boot bug)
-- v1.0.3 changes: device-side AEC (cancels speaker echo during TTS, listening
-  mode switched to Realtime); wake speed (detection window 3000→1500ms, threshold
-  floor 0.35→0.30); warm WebSocket connection kept alive while idle (wake skips
-  the re-handshake)
+- v1.0.6: larger TTS playback buffering (decode queue 2.4s→4.8s, playback
+  headroom 2→4, backpressure instead of dropping) — targets long-announcement
+  word loss
+- v1.0.5: mic gain 42→36 (reduce clipping distortion)
+- v1.0.4: **device-side AEC reverted** (v1.0.3 AEC caused the audio_input task
+  to spin forever on CoreS3, robot unresponsive)
+- Kept optimizations: wake speed (window 3000→1500ms, threshold floor 0.35→0.30);
+  warm WebSocket connection (2s re-connect after drop, wake skips re-handshake)
 - Previous v1.0.2-micfix: mic input gain 30→42 (fixes poor recognition);
   wake word "A Song"; post-fw layout (app @ 0x410000, 16MB)
 - Upgrade: app-only flash `xiaozhi.bin @ 0x410000`, keeps config
@@ -150,6 +154,24 @@ launchers (no flashing windows); `install_autostart.ps1` registers them.
   non-interruptive announcements.
 
 ## Version History
+
+### v08.06 (2026-08-04)
+
+- Firmware v1.0.6-ttsbuf (flashed): TTS playback buffer 2.4s→4.8s, playback
+  headroom 2→4, backpressure queueing (no drops)
+- Firmware v1.0.5: mic gain 42→36
+- **Device-side AEC reverted**: v1.0.3 AEC made the audio_input task spin forever
+  on CoreS3 (task_wdt, robot unresponsive/rebooting); located via addr2line in the
+  dios_ssp AEC DSP; VAD(WebRTC) pipeline restored; wake-speed and warm-connection
+  fixes kept (2s re-connect after drop)
+- Prompt v3 finalized (user-approved): reply language follows the xiaozhi.me
+  preset; ASR-tolerant intent routing (infer by meaning, never treat
+  "announce/status" as song search); "say that again" when unclear
+- Cloud: STACK agent model `deepseek-v4-flash-ha` hit `503 No available channel`
+  → switched to `qwen3.6`
+- **Pending**: long announcements still choppy/word-lossy — v1.0.6 buffering +
+  backpressure applied; investigating (multi-segment TTS ResetDecoder at segment
+  boundaries / server burst underrun / WS drop)
 
 ### v08.05 (2026-08-04)
 

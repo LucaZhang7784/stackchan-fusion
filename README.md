@@ -10,7 +10,7 @@
 ## 架构
 
 ```
-机器人 (M5Stack CoreS3, 固件 v1.0.3-aec-wake, 唤醒词「阿松」)
+机器人 (M5Stack CoreS3, 固件 v1.0.6-ttsbuf, 唤醒词「阿松」)
    │ 语音 (ASR/LLM/TTS 在 xiaozhi.me 云端)
    ▼
 xiaozhi.me 云智能体 (STACK, 提示词见 prompt-阿松-v3.md)
@@ -88,16 +88,16 @@ python scripts\verify_connectivity.py
 
 ## 机器人固件
 
-- 当前：**v1.0.3-aec-wake**（`firmware/post-fw-v1.0.3-aec-wake/`）
+- 当前：**v1.0.6-ttsbuf**（`firmware/post-fw-v1.0.6-ttsbuf/`）
 - 基座：07.31 已跑通的 `reference/stackchan-xiaozhi-firmware`（heavenchenggong 系，
   含「阿松」+ LED 补丁；**不要用 HtSz 主分支**——有 bug 起不来）
-- v1.0.3 改动：启用设备端 AEC（消除 TTS 扬声器回声，聆听模式改 Realtime）；
-  唤醒加速（检测窗口 3000→1500ms，阈值下限 0.35→0.30）；
-  后台预热 WebSocket 连接（待机常驻，唤醒免重新握手）
-- 上一版 v1.0.2-micfix：麦克风输入增益 30→42（修复语音识别差）；唤醒词「阿松」；
-  分区 post-fw（app @ 0x410000，16MB）
-- 升级：app-only 刷 `xiaozhi.bin @ 0x410000`，保留配置（`firmware/post-fw-v1.0.3-aec-wake/flash_post_fw.ps1`）
-- 构建：espressif/idf:v5.5.2（5.5.4 会黑屏），流程见 `firmware/build_fw_v103.ps1` + `build_led_ci.sh`
+- v1.0.6：TTS 播放缓冲加大（解码队列 2.4s→4.8s、播放余量 2→4、入队背压不丢包）——针对长播报吞字
+- v1.0.5：麦克风增益 42→36（降低削波失真）
+- v1.0.4：**设备端 AEC 已回退**（v1.0.3 的 AEC 在 CoreS3 上导致 audio_input 死循环、机器人无反应）
+- 保留优化：唤醒加速（检测窗口 3000→1500ms、阈值下限 0.35→0.30）；
+  后台预热 WebSocket 连接（掉线 2s 秒连，唤醒免重新握手）
+- 升级：app-only 刷 `xiaozhi.bin @ 0x410000`，保留配置（`firmware/post-fw-v1.0.6-ttsbuf/flash_post_fw.ps1`）
+- 构建：espressif/idf:v5.5.2（5.5.4 会黑屏），流程见 `firmware/build_fw_v106.ps1` + `build_led_ci.sh`
 
 ## 服务与运维
 
@@ -134,6 +134,19 @@ python scripts\verify_connectivity.py
 - 语音端到端延迟约 1.5–2.5s（云端 ASR/LLM/TTS 所致），非打断式播报可接受。
 
 ## 版本记录
+
+### v08.06（2026-08-04）
+
+- 固件 v1.0.6-ttsbuf（已刷入）：TTS 播放缓冲 2.4s→4.8s、播放余量 2→4、入队背压不丢包
+- 固件 v1.0.5：麦克风增益 42→36
+- **设备端 AEC 回退**：v1.0.3 的 AEC 在 CoreS3 上导致 `audio_input` 线程死循环
+  （task_wdt 触发、机器人无反应/重启），addr2line 定位到 dios_ssp AEC DSP，已禁用恢复
+  VAD(WebRTC) 管线；唤醒加速与预热连接保留（掉线 2s 秒连）
+- Prompt v3 定稿（用户确认）：回复语言跟随 xiaozhi.me 预设；ASR 容错意图兜底
+  （按意思推断，禁止把播报/查状态当点歌）；听不清回「再说一遍」
+- 云端：STACK 智能体模型 `deepseek-v4-flash-ha` 出现 503 无可用通道 → 换 `qwen3.6`
+- **Pending**：长播报时断时续/吞字未根治——v1.0.6 缓冲+背压已上，待排查
+  （多段 TTS 段边界 ResetDecoder / 服务器突发推送欠载 / WS 断流）
 
 ### v08.05（2026-08-04）
 

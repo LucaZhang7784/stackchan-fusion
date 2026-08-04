@@ -95,15 +95,20 @@ agent's hooks and announced by the robot after wake-up.
 
 ## Robot Firmware
 
-- Current: **v1.0.2-micfix** (`firmware/post-fw-v1.0.2-micfix/`)
+- Current: **v1.0.3-aec-wake** (`firmware/post-fw-v1.0.3-aec-wake/`)
 - Base: the verified 07.31 `reference/stackchan-xiaozhi-firmware`
   (heavenchenggong lineage, includes "A Song" + LED patches; **do not use the
   HtSz main branch** — it has a boot bug)
-- Changes: mic input gain 30→42 (fixes poor recognition); wake word "A Song";
-  post-fw layout (app @ 0x410000, 16MB)
+- v1.0.3 changes: device-side AEC (cancels speaker echo during TTS, listening
+  mode switched to Realtime); wake speed (detection window 3000→1500ms, threshold
+  floor 0.35→0.30); warm WebSocket connection kept alive while idle (wake skips
+  the re-handshake)
+- Previous v1.0.2-micfix: mic input gain 30→42 (fixes poor recognition);
+  wake word "A Song"; post-fw layout (app @ 0x410000, 16MB)
 - Upgrade: app-only flash `xiaozhi.bin @ 0x410000`, keeps config
-  (`firmware/post-fw-v1.0.2-micfix/flash_post_fw.ps1`)
-- Build: espressif/idf:v5.5.2 (5.5.4 causes black screen), flow in `firmware/build_led_ci.sh`
+  (`firmware/post-fw-v1.0.3-aec-wake/flash_post_fw.ps1`)
+- Build: espressif/idf:v5.5.2 (5.5.4 causes black screen), flow in
+  `firmware/build_fw_v103.ps1` + `build_led_ci.sh`
 
 ## Services & Ops
 
@@ -145,6 +150,20 @@ launchers (no flashing windows); `install_autostart.ps1` registers them.
   non-interruptive announcements.
 
 ## Version History
+
+### v08.05 (2026-08-04)
+
+- Firmware v1.0.3-aec-wake (`firmware/post-fw-v1.0.3-aec-wake/`):
+  - Device-side AEC (ES7210 reference input cancels speaker echo), listening
+    mode switched to Realtime (barge-in, no tail truncation)
+  - Wake speed: multinet detection window 3000→1500ms, threshold floor 0.35→0.30
+  - Warm connection: idle WebSocket kept alive (15s→120s exponential backoff),
+    wake skips the re-handshake
+- Phase 5 decisions: P5-1/P5-2 (pi/agy voice-confirm loops) dropped — pi via
+  VS Code, agy via Antigravity Desktop; P5-4 (cloud active push) infeasible —
+  xiaozhi.me has no idle-trigger API; P5-5 (desktop session injection) infeasible —
+  codex app-server daemon is Unix-only, remote-control is SSH pairing
+- Rollback backup: git tag `backup-v08.04` + `backup-v08.04.zip`
 
 ### v08.04 (2026-08-04)
 

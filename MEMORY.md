@@ -95,6 +95,11 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 - [ ] 重新启用 auth（MAC 白名单空 token bug, 可选）
 - [x] 2026-08-04 修: 电脑重启后云桥接不自启导致机器人离线——已注册
       StackChan-CloudBridge 登录自启任务(run_bridge_hidden.vbs), install_autostart.ps1 同步。
+- [x] 2026-08-04: 托盘新增 Restore-BridgeIfDown 守护(进程<2 或心跳>3分钟静默重启,
+      防抖 30s), 桥接实现「开机自启 + keep alive」(桥接需直接操作 Windows 宿主,
+      无法进 Linux Docker)。
+- [x] 2026-08-04: 托盘单实例守卫加固——只匹配 `-File ...fusion_tray.ps1` 的真实
+      托盘实例, 避免命令行仅提及路径的进程被误判而 exit 0。
 
 ## 八、常用命令
 

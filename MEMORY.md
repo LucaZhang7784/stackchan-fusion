@@ -1,11 +1,11 @@
 # StackChan 融合项目记忆（权威版）
 
-> 更新: 2026-08-03 18:00 (+08:00) · 会话开始时先读本文件再动手。
+> 更新: 2026-08-04 22:10 (+08:00) · 会话开始时先读本文件再动手。
 
 ## 一、当前架构（云链路 + 唤醒播报）
 
 ```
-机器人(M5Stack CoreS3, 固件 v1.0.2-micfix)
+机器人(M5Stack CoreS3, 固件 v1.0.3-aec-wake)
   │ 语音走 xiaozhi.me 云端 STACK 智能体(ASR/LLM/TTS 全在云端)
   ▼
 xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py, 本机)
@@ -21,7 +21,8 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 - **主链路**: 云链路; 自建 docker xiaozhi-esp32-server + Tailscale Funnel 只作备用。
 - **主动播报方式**: 唤醒优先规则——每次唤醒后 LLM 先调 `agent_pending`, 逐条念, 念完 `clear=true`（非打断式; 自建链路才有 robot_say 真推送）。
-- **唤醒词「阿松」**（拼音 a song, 固件硬编码 + 你好小智兜底; 阈值代码下限 0.35 防误触发）。
+- **唤醒词「阿松」**（拼音 a song, 固件硬编码 + 你好小智兜底; 阈值下限 0.30, 检测窗口 1500ms）。
+- **后台预热连接**: 待机时维持一条 WebSocket 连接（15s→120s 指数退避重连）, 唤醒时跳过重新握手。
 
 ## 二、服务状态（2026-08-03 实测）
 
@@ -38,11 +39,18 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 ## 三、机器人固件（重要）
 
-- **当前固件**: `fusion.firmware.0731/firmware/post-fw-v1.0.2-micfix`
+- **当前固件**: `fusion.firmware.0731/firmware/post-fw-v1.0.3-aec-wake`
   - 基座: **07.31 已跑通的** `reference/stackchan-xiaozhi-firmware`（heavenchenggong 系, 含「阿松」+ LED 补丁, 不要用 HtSz 主分支——有 bug 起不来）
-  - 改动: 仅麦克风输入增益 30→42（修复识别差）; 唤醒词 阿松; 阈值代码下限 0.35
+  - v1.0.3 改动（2026-08-04）:
+    1. **启用设备端 AEC**（`CONFIG_USE_DEVICE_AEC=y`, Kconfig 已给 M5STACK_CORE_S3 放行）
+       —— TTS 播放时消除扬声器回声, 聆听模式 AutoStop→Realtime（可打断、不截尾音）。
+    2. **唤醒加速**: multinet `duration_` 3000→1500ms; 阈值下限 0.35→0.30。
+    3. **后台预热连接**: 待机常驻 WS（指数退避重连）, 唤醒免重新握手;
+       `OpenAudioChannel(silent)` 后台连接失败不弹错误提示。
+  - 上一版 v1.0.2-micfix: 麦克风输入增益 30→42（修复识别差）; 唤醒词 阿松; 阈值下限 0.35
   - 布局: post-fw（app @ 0x410000, 16MB）; app-only 刷 `xiaozhi.bin @ 0x410000` 保留配置
   - 构建: espressif/idf:v5.5.2（5.5.4 会黑屏）, `firmware/build_led_fw.ps1` / `build_led_ci.sh` 流程
+  - v1.0.3 构建脚本: `firmware/build_fw_v103.ps1`; 刷机说明 `firmware/post-fw-v1.0.3-aec-wake/README-flash.md`
 - 麦克风增益文件: `reference/stackchan-xiaozhi-firmware/main/boards/m5stack-core-s3/cores3_audio_codec.cc` (`input_gain_`)
 - 唤醒词: 固件 `custom_wake_word.cc` 硬编码 `{"a song","阿松","wake"}` + 你好小智兜底
 
@@ -78,6 +86,12 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 8. **claude 可见窗口无完成事件**: `claude -p`(print 模式)不触发 Claude Code hooks →
    `agents/claude_visible_run.py` 包装脚本运行并捕获输出, 完成后同时 POST done 到网关
    + 写 outbox（agent_result_check 与 agent_pending 两条路都通）。
+9. **唤醒后进聆听慢（几秒）**: 双管齐下——multinet 检测窗口 3000→1500ms、阈值下限 0.35→0.30;
+   另加后台预热 WS 连接（待机常驻, 断线 15s→120s 退避重连）, 唤醒跳过 DNS/TLS/hello。
+10. **TTS 播放时识别差/丢字**: 启用设备端 AEC（ES7210 参考输入）, 聆听模式变 Realtime
+    （可打断、不截尾音）。
+11. **后台连接失败弹错误提示**: `OpenAudioChannel(bool silent)`——预热连接失败只记日志,
+    不触发 MAIN_EVENT_ERROR 弹窗。
 9. **claude/pi 可见窗口工作目录**: 从用户主目录改为项目目录 `D:\ProcessCenter\StackChan`
    （与 codex/agy 一致, 「总结当前项目」才有上下文）。
 10. **托盘队列操作菜单**: 新增「队列操作」子菜单——显示队列消息内容 / 清空队列
@@ -90,7 +104,15 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 - [x] Phase 4 完整验收: 唤醒播报 ✅ / 状态查询 ✅ / 任务闭环 ✅
       （codex、claude 总结项目 → 窗口执行 → 唤醒/主动问结果均播报成功, 2026-08-03 晚实测）
-- [ ] Phase 5 可选: 云端空闲自查（非打断）; 桌面应用会话注入（等 codex remote-control 稳定）
+- [x] Phase 5 决策（2026-08-04）:
+  - P5-1（pi 语音确认回环）: **舍弃** —— pi 直接走 VS Code 交互, 不做语音回环。
+  - P5-2（agy 语音确认回环）: **舍弃** —— agy 直接走 Antigravity Desktop 交互。
+  - P5-4（云端空闲自查/主动推送）: **不可行** —— xiaozhi.me 云智能体只在语音对话时触发,
+    无空闲/定时自触发 API; 真·主动播报只能走自建链路 robot_say（已有）。
+  - P5-5（桌面应用会话注入）: **不可行** —— `codex app-server daemon` 仅支持 Unix;
+    `codex remote-control` 是 SSH/移动配对机制, 不是桌面会话注入 API。
+    维持现状: 机器人任务在 CLI 可见窗口执行, 桌面应用会话经 hooks 上报。
+- [x] 2026-08-04: 固件 v1.0.3-aec-wake 刷入（AEC + 唤醒加速 + 预热连接）, 待实测验证
 - [ ] 机器人目前可能待机, 需唤醒后再验证
 - [ ] 重新启用 auth（MAC 白名单空 token bug, 可选）
 - [x] 2026-08-04 修: 电脑重启后云桥接不自启导致机器人离线——已注册

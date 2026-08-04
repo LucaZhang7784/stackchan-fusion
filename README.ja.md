@@ -94,15 +94,19 @@ python scripts\verify_connectivity.py
 
 ## ロボットファームウェア
 
-- 現行：**v1.0.2-micfix**（`firmware/post-fw-v1.0.2-micfix/`）
+- 現行：**v1.0.3-aec-wake**（`firmware/post-fw-v1.0.3-aec-wake/`）
 - ベース：検証済みの 07.31 `reference/stackchan-xiaozhi-firmware`
   （heavenchenggong 系。「阿松」+ LED パッチ込み。**HtSz メインブランチは使用禁止**——
   起動しないバグあり）
-- 変更：マイク入力ゲイン 30→42（音声認識の改善）；ウェイクワード「阿松」；
+- v1.0.3 の変更：デバイス側 AEC（TTS 再生中のスピーカーエコーを除去、リスニングは
+  Realtime に変更）；ウェイク高速化（検出ウィンドウ 3000→1500ms、しきい値下限 0.35→0.30）；
+  待機中 WebSocket を常時接続（起床時の再ハンドシェイク不要）
+- 前版 v1.0.2-micfix：マイク入力ゲイン 30→42（音声認識の改善）；ウェイクワード「阿松」；
   post-fw レイアウト（app @ 0x410000、16MB）
 - アップグレード：`xiaozhi.bin @ 0x410000` を app-only 書き込み（設定保持、
-  `firmware/post-fw-v1.0.2-micfix/flash_post_fw.ps1`）
-- ビルド：espressif/idf:v5.5.2（5.5.4 は黒画面）、手順は `firmware/build_led_ci.sh`
+  `firmware/post-fw-v1.0.3-aec-wake/flash_post_fw.ps1`）
+- ビルド：espressif/idf:v5.5.2（5.5.4 は黒画面）、手順は `firmware/build_fw_v103.ps1` +
+  `build_led_ci.sh`
 
 ## サービスと運用
 
@@ -142,6 +146,20 @@ python scripts\verify_connectivity.py
   非割り込みアナウンスとしては許容範囲。
 
 ## バージョン履歴
+
+### v08.05（2026-08-04）
+
+- ファームウェア v1.0.3-aec-wake（`firmware/post-fw-v1.0.3-aec-wake/`）：
+  - デバイス側 AEC（ES7210 参照入力でスピーカーエコーを除去）、リスニングを
+    Realtime に変更（割り込み可・末尾切れなし）
+  - ウェイク高速化：multinet 検出ウィンドウ 3000→1500ms、しきい値下限 0.35→0.30
+  - 予熱接続：待機中 WebSocket を常時接続（15s→120s 指数バックオフで再接続）、
+    起床時の再ハンドシェイク不要
+- Phase 5 決定：P5-1/P5-2（pi/agy の音声確認ループ）は**破棄**——pi は VS Code、
+  agy は Antigravity Desktop 経由；P5-4（クラウド能動プッシュ）は**不可**——
+  xiaozhi.me にアイドル自発 API なし；P5-5（デスクトップセッション注入）は**不可**——
+  codex app-server daemon は Unix のみ、remote-control は SSH ペアリング
+- ロールバック用バックアップ：Git tag `backup-v08.04` + `backup-v08.04.zip`
 
 ### v08.04（2026-08-04）
 

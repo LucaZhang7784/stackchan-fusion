@@ -10,7 +10,7 @@
 ## 架构
 
 ```
-机器人 (M5Stack CoreS3, 固件 v1.0.2-micfix, 唤醒词「阿松」)
+机器人 (M5Stack CoreS3, 固件 v1.0.3-aec-wake, 唤醒词「阿松」)
    │ 语音 (ASR/LLM/TTS 在 xiaozhi.me 云端)
    ▼
 xiaozhi.me 云智能体 (STACK, 提示词见 prompt-阿松-v2.md)
@@ -88,13 +88,16 @@ python scripts\verify_connectivity.py
 
 ## 机器人固件
 
-- 当前：**v1.0.2-micfix**（`firmware/post-fw-v1.0.2-micfix/`）
+- 当前：**v1.0.3-aec-wake**（`firmware/post-fw-v1.0.3-aec-wake/`）
 - 基座：07.31 已跑通的 `reference/stackchan-xiaozhi-firmware`（heavenchenggong 系，
   含「阿松」+ LED 补丁；**不要用 HtSz 主分支**——有 bug 起不来）
-- 改动：麦克风输入增益 30→42（修复语音识别差）；唤醒词「阿松」；分区 post-fw
-  （app @ 0x410000，16MB）
-- 升级：app-only 刷 `xiaozhi.bin @ 0x410000`，保留配置（`firmware/post-fw-v1.0.2-micfix/flash_post_fw.ps1`）
-- 构建：espressif/idf:v5.5.2（5.5.4 会黑屏），流程见 `firmware/build_led_ci.sh`
+- v1.0.3 改动：启用设备端 AEC（消除 TTS 扬声器回声，聆听模式改 Realtime）；
+  唤醒加速（检测窗口 3000→1500ms，阈值下限 0.35→0.30）；
+  后台预热 WebSocket 连接（待机常驻，唤醒免重新握手）
+- 上一版 v1.0.2-micfix：麦克风输入增益 30→42（修复语音识别差）；唤醒词「阿松」；
+  分区 post-fw（app @ 0x410000，16MB）
+- 升级：app-only 刷 `xiaozhi.bin @ 0x410000`，保留配置（`firmware/post-fw-v1.0.3-aec-wake/flash_post_fw.ps1`）
+- 构建：espressif/idf:v5.5.2（5.5.4 会黑屏），流程见 `firmware/build_fw_v103.ps1` + `build_led_ci.sh`
 
 ## 服务与运维
 
@@ -131,6 +134,18 @@ python scripts\verify_connectivity.py
 - 语音端到端延迟约 1.5–2.5s（云端 ASR/LLM/TTS 所致），非打断式播报可接受。
 
 ## 版本记录
+
+### v08.05（2026-08-04）
+
+- 固件 v1.0.3-aec-wake（`firmware/post-fw-v1.0.3-aec-wake/`）：
+  - 设备端 AEC（ES7210 参考输入消除扬声器回声），聆听模式改 Realtime（可打断、不截尾音）
+  - 唤醒加速：multinet 检测窗口 3000→1500ms，阈值下限 0.35→0.30
+  - 后台预热连接：待机常驻 WebSocket（15s→120s 指数退避重连），唤醒免重新握手
+- Phase 5 决策：P5-1/P5-2（pi/agy 语音确认回环）**舍弃**——pi 走 VS Code、
+  agy 走 Antigravity Desktop；P5-4（云端主动推送）**不可行**——xiaozhi.me 无空闲
+  自触发 API；P5-5（桌面会话注入）**不可行**——codex app-server daemon 仅 Unix，
+  remote-control 是 SSH 配对机制
+- 回退备份：Git tag `backup-v08.04` + `backup-v08.04.zip`
 
 ### v08.04（2026-08-04）
 

@@ -1,11 +1,11 @@
 # StackChan 融合项目记忆（权威版）
 
-> 更新: 2026-08-04 22:10 (+08:00) · 会话开始时先读本文件再动手。
+> 更新: 2026-08-04 23:15 (+08:00) · 会话开始时先读本文件再动手。
 
 ## 一、当前架构（云链路 + 唤醒播报）
 
 ```
-机器人(M5Stack CoreS3, 固件 v1.0.3-aec-wake)
+机器人(M5Stack CoreS3, 固件 v1.0.6-ttsbuf)
   │ 语音走 xiaozhi.me 云端 STACK 智能体(ASR/LLM/TTS 全在云端)
   ▼
 xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py, 本机)
@@ -22,7 +22,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 - **主链路**: 云链路; 自建 docker xiaozhi-esp32-server + Tailscale Funnel 只作备用。
 - **主动播报方式**: 唤醒优先规则——每次唤醒后 LLM 先调 `agent_pending`, 逐条念, 念完 `clear=true`（非打断式; 自建链路才有 robot_say 真推送）。
 - **唤醒词「阿松」**（拼音 a song, 固件硬编码 + 你好小智兜底; 阈值下限 0.30, 检测窗口 1500ms）。
-- **后台预热连接**: 待机时维持一条 WebSocket 连接（15s→120s 指数退避重连）, 唤醒时跳过重新握手。
+- **后台预热连接**: 待机时维持一条 WebSocket 连接（曾连上后掉线 2s 内秒连; 首次失败 5s→40s 退避）, 唤醒时跳过重新握手。
 
 ## 二、服务状态（2026-08-03 实测）
 
@@ -39,18 +39,21 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 ## 三、机器人固件（重要）
 
-- **当前固件**: `fusion.firmware.0731/firmware/post-fw-v1.0.3-aec-wake`
+- **当前固件**: `fusion.firmware.0731/firmware/post-fw-v1.0.6-ttsbuf`（已刷入）
   - 基座: **07.31 已跑通的** `reference/stackchan-xiaozhi-firmware`（heavenchenggong 系, 含「阿松」+ LED 补丁, 不要用 HtSz 主分支——有 bug 起不来）
-  - v1.0.3 改动（2026-08-04）:
-    1. **启用设备端 AEC**（`CONFIG_USE_DEVICE_AEC=y`, Kconfig 已给 M5STACK_CORE_S3 放行）
-       —— TTS 播放时消除扬声器回声, 聆听模式 AutoStop→Realtime（可打断、不截尾音）。
-    2. **唤醒加速**: multinet `duration_` 3000→1500ms; 阈值下限 0.35→0.30。
-    3. **后台预热连接**: 待机常驻 WS（指数退避重连）, 唤醒免重新握手;
-       `OpenAudioChannel(silent)` 后台连接失败不弹错误提示。
-  - 上一版 v1.0.2-micfix: 麦克风输入增益 30→42（修复识别差）; 唤醒词 阿松; 阈值下限 0.35
+  - **v1.0.6 改动（当前, 2026-08-04）**: TTS 播放缓冲——解码队列 2.4s→4.8s、
+    播放余量 2→4 帧、入队改**背压不丢包**（`PushPacketToDecodeQueue(wait=true)`）——针对长播报吞字。
+  - v1.0.5: 麦克风增益 42→36（42 可能削波导致"播报队列消息"→"播放对你秋田"式失真）。
+  - v1.0.4: **设备端 AEC 回退**——v1.0.3 开的 AEC 在 CoreS3 上会让 `audio_input` 任务
+    在 dios_ssp AEC DSP（`complex_abs2`）里死循环 → task_wdt 触发、机器人无反应/重启;
+    已恢复 VAD(WebRTC) 管线（AEC 方案废弃, 详见 Pending）。
+  - v1.0.3（已废弃）: 启用设备端 AEC + 唤醒加速 + 后台预热连接。
+  - 保留至今的优化: 唤醒加速（multinet 窗口 3000→1500ms、阈值下限 0.35→0.30）;
+    后台预热 WS 连接（曾连上掉线 2s 秒连）; `OpenAudioChannel(silent)` 后台失败不弹错误。
+  - 上一版跑通基线 v1.0.2-micfix: 麦克风增益 42; 唤醒词 阿松; 阈值下限 0.35
   - 布局: post-fw（app @ 0x410000, 16MB）; app-only 刷 `xiaozhi.bin @ 0x410000` 保留配置
   - 构建: espressif/idf:v5.5.2（5.5.4 会黑屏）, `firmware/build_led_fw.ps1` / `build_led_ci.sh` 流程
-  - v1.0.3 构建脚本: `firmware/build_fw_v103.ps1`; 刷机说明 `firmware/post-fw-v1.0.3-aec-wake/README-flash.md`
+  - 构建脚本: `firmware/build_fw_v10{3,4,5,6}.ps1`; 当前刷机目录 `firmware/post-fw-v1.0.6-ttsbuf/`
 - 麦克风增益文件: `reference/stackchan-xiaozhi-firmware/main/boards/m5stack-core-s3/cores3_audio_codec.cc` (`input_gain_`)
 - 唤醒词: 固件 `custom_wake_word.cc` 硬编码 `{"a song","阿松","wake"}` + 你好小智兜底
 
@@ -93,10 +96,16 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
    + 写 outbox（agent_result_check 与 agent_pending 两条路都通）。
 9. **唤醒后进聆听慢（几秒）**: 双管齐下——multinet 检测窗口 3000→1500ms、阈值下限 0.35→0.30;
    另加后台预热 WS 连接（待机常驻, 断线 15s→120s 退避重连）, 唤醒跳过 DNS/TLS/hello。
-10. **TTS 播放时识别差/丢字**: 启用设备端 AEC（ES7210 参考输入）, 聆听模式变 Realtime
-    （可打断、不截尾音）。
+10. **TTS 播放时识别差/丢字**: ~~启用设备端 AEC~~ **已回退**——AEC 在 CoreS3 上导致
+    audio_input 死循环（见第 12 条）; 现靠云端 ASR + 增益 36。
 11. **后台连接失败弹错误提示**: `OpenAudioChannel(bool silent)`——预热连接失败只记日志,
     不触发 MAIN_EVENT_ERROR 弹窗。
+12. **设备端 AEC 导致机器人无反应/重启（2026-08-04）**: v1.0.3 开 AEC 后 `audio_input`
+    线程在 `dios_ssp_aec_erl_est_process → complex_abs2` 死循环（task_wdt 每 10s 触发）;
+    addr2line 定位后回退 AEC（v1.0.4）, 恢复 VAD(WebRTC) 管线, task_wdt=0。**AEC 方案废弃**。
+13. **长播报时断时续/吞字（2026-08-04, 处理中→Pending）**: v1.0.6 已加大解码缓冲
+    （2.4s→4.8s）+ 播放余量（2→4）+ 入队背压不丢包; 用户反馈仍时断时续。
+    待排查方向: 多段 TTS 段边界 `ResetDecoder()` 清缓冲 / 服务器突发推送欠载 / WS 断流。
 9. **claude/pi 可见窗口工作目录**: 从用户主目录改为项目目录 `D:\ProcessCenter\StackChan`
    （与 codex/agy 一致, 「总结当前项目」才有上下文）。
 10. **托盘队列操作菜单**: 新增「队列操作」子菜单——显示队列消息内容 / 清空队列
@@ -117,7 +126,13 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
   - P5-5（桌面应用会话注入）: **不可行** —— `codex app-server daemon` 仅支持 Unix;
     `codex remote-control` 是 SSH/移动配对机制, 不是桌面会话注入 API。
     维持现状: 机器人任务在 CLI 可见窗口执行, 桌面应用会话经 hooks 上报。
-- [x] 2026-08-04: 固件 v1.0.3-aec-wake 刷入（AEC + 唤醒加速 + 预热连接）, 待实测验证
+- [x] 2026-08-04: 固件 v1.0.6-ttsbuf 刷入（AEC 已回退; 增益 36; TTS 缓冲加大; 唤醒加速+预热连接保留）
+- [x] 2026-08-04: xiaozhi.me STACK 智能体模型 `deepseek-v4-flash-ha` 出现
+      `503 No available channel` → 控制台已换 `qwen3.6`
+- [ ] **Pending · 长播报时断时续/吞字**: 用户反馈长语音播报仍时断时续（v1.0.6 缓冲加大
+      后未根治）。排查线索: ①多段 TTS 时 `kDeviceStateSpeaking` 每次进入都调
+      `ResetDecoder()` 清解码/播放队列; ②服务器突发推送导致欠载; ③WS 断流。
+      验证方法: 串口抓长播报, 观察段边界状态切换与播放连续性。
 - [ ] 机器人目前可能待机, 需唤醒后再验证
 - [ ] 重新启用 auth（MAC 白名单空 token bug, 可选）
 - [x] 2026-08-04 修: 电脑重启后云桥接不自启导致机器人离线——已注册
@@ -147,7 +162,7 @@ python -m esptool --chip esp32s3 -b 460800 --port COM8 --before default-reset --
 
 - 网关: `fusion.firmware.0731/gateway/`（fusion_gateway.py, agents_core.py, fusion_tray.ps1）
 - 桥接: `fusion.firmware.0731/xiaozhi-mcp/`（server.py, mcp_pipe.py）
-- 固件: `fusion.firmware.0731/firmware/post-fw-v1.0.2-micfix/`
-- 提示词: `fusion.firmware.0731/prompt-阿松-v2.md`
+- 固件: `fusion.firmware.0731/firmware/post-fw-v1.0.6-ttsbuf/`
+- 提示词: `fusion.firmware.0731/prompt-阿松-v3.md`
 - 发布副本: `D:\ProcessCenter\StackChan\stackchan-fusion-github`
 - 07.31 备份包: `fusion.firmware.0731/package-stackchan.zip.0731-backup`

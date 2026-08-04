@@ -16,7 +16,7 @@ announce results, confirm by voice.
 Robot (M5Stack CoreS3, firmware v1.0.2-micfix, wake word "A Song/阿松")
    │ voice (ASR/LLM/TTS in the xiaozhi.me cloud)
    ▼
-xiaozhi.me cloud agent (STACK, prompt in prompt-阿松-v2.md)
+xiaozhi.me cloud agent (STACK, prompt in prompt-阿松-v3.md)
    │ MCP (wss://api.xiaozhi.me/mcp)
    ▼
 xiaozhi-mcp cloud bridge (mcp_pipe.py + server.py, on this PC)
@@ -133,7 +133,7 @@ launchers (no flashing windows); `install_autostart.ps1` registers them.
 | Garbled Chinese tasks | hooks read UTF-8; `mcp_pipe` child `PYTHONUTF8=1` (fixed; restart codex desktop to apply) |
 | Robot reads stale results | `agent_result_check` only returns results <30 min old (fixed) |
 | Two tray icons | `fusion_tray.ps1` single-instance guard (fixed) |
-| Robot does not announce | confirm it is awake and the cloud prompt is v2 (`prompt-阿松-v2.md`) |
+| Robot does not announce | confirm it is awake and the cloud prompt is v3 (`prompt-阿松-v3.md`) |
 
 ## Known Limits
 

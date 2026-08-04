@@ -67,12 +67,17 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 （Codex-Asong / ClaudeCode-Asong / Antigravity-Asong / pi-Asong, 脚本在 `gateway/state/visible_runs/`）,
 结果经 hooks 回流 → 机器人唤醒后 `agent_pending` 播报。
 
-## 五、智能体 Prompt（阿松 v2）
+## 五、智能体 Prompt（阿松 v3）
 
-- 文件: `fusion.firmware.0731/prompt-阿松-v2.md`（已贴入 xiaozhi.me 控制台）
-- 核心规则: 唤醒优先（每次唤醒先 agent_pending, 逐条播报, clear=true）;
-  「查询 XX 状态」→ agent_status（**绝不 agent_query**）; 「让 XX 做事」→ agent_query;
-  语音朗读要求（无 markdown/emoji）; LED 固件自动跟随。
+- 文件: `fusion.firmware.0731/prompt-阿松-v3.md`（需贴入 xiaozhi.me 控制台; v2 保留存档）
+- 核心规则:
+  - **强制普通话**（严禁粤语/方言/英文混排——修复智能体用粤语回复的问题）
+  - 唤醒优先（每次唤醒先 agent_pending, 逐条播报, clear=true）
+  - **ASR 容错关键词兜底**: 听错时按关键词推断意图——「播报/消息/队列/待办」→ agent_pending;
+    「状态/在干嘛/进程」→ agent_status; 「结果/完了吗」→ agent_result_check;
+    「可以/拒绝」→ agent_confirm; 「docker/容器」→ docker_status
+  - 禁止把「播报消息/查状态」理解成点歌/搜索; 听不清回「再说一遍」
+  - 语音朗读要求（无 markdown/emoji）; LED 固件自动跟随
 
 ## 六、2026-08-03 已修复的问题（防止复发）
 

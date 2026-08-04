@@ -16,7 +16,7 @@
 ロボット (M5Stack CoreS3, ファームウェア v1.0.2-micfix, ウェイクワード「阿松」)
    │ 音声 (ASR/LLM/TTS は xiaozhi.me クラウド)
    ▼
-xiaozhi.me クラウドエージェント (STACK, プロンプトは prompt-阿松-v2.md)
+xiaozhi.me クラウドエージェント (STACK, プロンプトは prompt-阿松-v3.md)
    │ MCP (wss://api.xiaozhi.me/mcp)
    ▼
 xiaozhi-mcp クラウドブリッジ (mcp_pipe.py + server.py, この PC)
@@ -131,7 +131,7 @@ python scripts\verify_connectivity.py
 | 中国語タスクが文字化け | hooks は UTF-8 で読み取り。`mcp_pipe` 子プロセス `PYTHONUTF8=1`（修正済み。codex デスクトップ再起動で適用） |
 | ロボットが古い結果を読み上げる | `agent_result_check` は 30 分以内の結果のみ返す（修正済み） |
 | トレイが 2 つ表示 | `fusion_tray.ps1` 単一インスタンス保護（修正済み） |
-| ロボットが読み上げない | 起床しているか、クラウドプロンプトが v2（`prompt-阿松-v2.md`）か確認 |
+| ロボットが読み上げない | 起床しているか、クラウドプロンプトが v3（`prompt-阿松-v3.md`）か確認 |
 
 ## 既知の制約
 

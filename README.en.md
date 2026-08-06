@@ -1,5 +1,10 @@
 # StackChan Fusion
 
+> **v08.06 (2026-08-06):** Announcement pipeline reworked — µ-law over EMQX MQTT with a
+> msg_uid idempotency + firmware-ACK closed loop; single-worker FIFO push; agent aliases +
+> fail-fast probe; VS Code integration; interactive Claude permission broadcast.
+> `README.md` (zh) is authoritative for the latest state.
+
 Drive local AI agents — **codex / claude / agy / pi** — by voice from a
 **StackChan desktop robot** (M5Stack CoreS3): check status, dispatch tasks,
 announce results, confirm by voice.

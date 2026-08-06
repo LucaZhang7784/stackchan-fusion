@@ -15,6 +15,7 @@ POST 到网关 /api/agent_event。无论成败都必须按协议向 stdout 回�
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 import urllib.request
@@ -37,13 +38,14 @@ QUESTION_TOOLS = {
 def _load_token() -> str:
     try:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8")).get("auth_token", "")
-    except Exception:
+    except Exception as e:
+        _log(f"[ERROR] config.json 解析失败(token 为空): {e}")
         return ""
 
 
-def _post_agent(agent: str, etype: str, summary: str, session_id: str) -> None:
+def _post_agent(agent: str, etype: str, summary: str, session_id: str, msg_uid: str = "") -> None:
     body = json.dumps(
-        {"agent": agent, "event": etype, "summary": summary, "session_id": session_id},
+        {"agent": agent, "event": etype, "summary": summary, "session_id": session_id, "msg_uid": msg_uid},
         ensure_ascii=False,
     ).encode("utf-8")
     req = urllib.request.Request(
@@ -52,8 +54,9 @@ def _post_agent(agent: str, etype: str, summary: str, session_id: str) -> None:
     )
     try:
         urllib.request.urlopen(req, timeout=5).read()
-    except Exception:
-        pass
+        _log(f"posted {etype} ok {msg_uid}: {summary[:80]}")
+    except Exception as e:
+        _log(f"post {etype} FAILED {msg_uid}: {e} :: {summary[:80]}")
 
 
 def _log(line: str) -> None:
@@ -144,6 +147,31 @@ def _parse_args(argv):
     return agent, event
 
 
+def _msg_uid(payload: dict, agent: str) -> str:
+    """按 (conversationId, 最后一条 PLANNER_RESPONSE 内容/stepIdx) 归一化 msg_uid。"""
+    conv = str(payload.get("conversationId") or payload.get("session_id") or "")
+    key = str(payload.get("stepIdx") or payload.get("executionNum") or "")
+    tp = payload.get("transcriptPath") or payload.get("artifactDirectoryPath")
+    if not key and tp:
+        try:
+            lines = Path(tp).read_text(encoding="utf-8", errors="replace").splitlines()[-200:]
+            for line in reversed(lines):
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                if str(o.get("type", "")).upper() == "PLANNER_RESPONSE":
+                    key = str(o.get("content") or "")
+                    if key:
+                        break
+        except Exception:
+            pass
+    if not key:
+        key = conv or "none"
+    h = hashlib.sha256(f"{conv}|{key}".encode("utf-8")).hexdigest()[:12]
+    return f"antigravity_{conv[:8]}_{h}"
+
+
 def main(argv) -> int:
     try:
         raw = sys.stdin.buffer.read() if sys.stdin else b""
@@ -161,19 +189,20 @@ def main(argv) -> int:
         event = str(payload.get("hook_event_name", ""))
     session_id = str(payload.get("conversationId") or payload.get("session_id") or "")
     agent = "agy" if "antigravity-cli" in str(payload.get("artifactDirectoryPath", "")) else AGENT
+    msg_uid = _msg_uid(payload, agent)
     _log(f"{event} {json.dumps(payload, ensure_ascii=False)[:300]}")
 
     if event == "PreToolUse":
         tool = _tool_name(payload)
         if tool in QUESTION_TOOLS or tool.startswith("mcp_") or tool.startswith("browser_"):
-            _post_agent(agent, "question", _question_summary(payload), session_id)
+            _post_agent(agent, "question", _question_summary(payload), session_id, msg_uid)
         _emit({"decision": "allow"})
     elif event in ("PermissionRequest", "PermissionDenied", "Elicitation"):
-        _post_agent(agent, "question", _question_summary(payload), session_id)
+        _post_agent(agent, "question", _question_summary(payload), session_id, msg_uid)
         _emit({"decision": "allow"})
     elif event == "Stop":
         summary = _transcript_summary(payload) or str(payload.get("terminationReason") or "任务已结束")
-        _post_agent(agent, "done", summary, session_id)
+        _post_agent(agent, "done", summary, session_id, msg_uid)
         _emit({"decision": "allow"})
     elif event == "PostToolUse":
         _emit({})

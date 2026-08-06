@@ -29,6 +29,11 @@ def _load_token() -> str:
         cfg_path = Path(__file__).resolve().parent.parent / "gateway" / "config.json"
         return json.loads(cfg_path.read_text(encoding="utf-8")).get("auth_token", "")
     except Exception as e:
+        try:
+            sys.stderr.write(f"[ERROR] config.json 解析失败(token 为空): {e}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
         return os.environ.get("FUSION_GATEWAY_TOKEN", "")
 
 

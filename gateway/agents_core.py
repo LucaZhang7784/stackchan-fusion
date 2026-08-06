@@ -92,16 +92,20 @@ def run_agent(name: str, task: str, timeout: int = 120, workdir: str | None = No
 
 
 _probe_cache: dict = {}
-_PROBE_TTL = 120  # 秒; CLI 版本短时间内不变, 缓存避免 agent_status 每次启动 CLI
+_PROBE_TTL = 300  # 秒; CLI 版本短时间内不变, 缓存避免 agent_status 每次启动 CLI
 
 
 def probe(name: str) -> tuple[bool, str]:
-    """探测 agent CLI 是否可用(返回 可用性, 版本首行)。带 120s 缓存。"""
+    """探测 agent CLI 是否可用(返回 可用性, 版本首行)。带 300s 缓存 + 进程快检。"""
     now = time.time()
     cached = _probe_cache.get(name)
     if cached and now - cached[0] < _PROBE_TTL:
         return cached[1], cached[2]
-    via_http = _exec_via_http(name, "probe", "", 15)
+    # 快检: 有运行进程直接视为可用(避免每次冷启动 CLI, 这是 agent_status 慢的主因)
+    if running_processes(name):
+        _probe_cache[name] = (now, True, "进程运行中")
+        return True, "进程运行中"
+    via_http = _exec_via_http(name, "probe", "", 8)
     if via_http is not None:
         if via_http.get("ok"):
             first = (via_http.get("out") or "").strip().splitlines()
@@ -116,7 +120,7 @@ def probe(name: str) -> tuple[bool, str]:
     cli = cfg.get("cli", name)
     cli_path = _resolve(cli)
     full = [cli_path] + version_args
-    r = _run(full, 15, cfg.get("workdir") or str(ROOT))
+    r = _run(full, 8, cfg.get("workdir") or str(ROOT))
     if r["ok"]:
         first = (r["out"] or "").strip().splitlines()
         info = (first[0][:80] if first else "ok")
@@ -163,6 +167,16 @@ def events_read(clear: bool = False) -> list[dict]:
     if clear:
         EVENTS_FILE.write_text("", encoding="utf-8")
     return items[-20:]
+
+
+def events_remove_ids(ids: set[str]) -> int:
+    """推送成功的事件按 id 移除, 避免队列残留导致托盘计数虚高/重复播报。"""
+    if not EVENTS_FILE.exists() or not ids:
+        return 0
+    lines = [l for l in EVENTS_FILE.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
+    kept = [l for l in lines if json.loads(l).get("id") not in ids]
+    EVENTS_FILE.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    return len(lines) - len(kept)
 
 
 def _confirmations() -> list[dict]:
@@ -231,7 +245,23 @@ AGENT_CLIS: dict = {
     "agy": {"cli": "agy", "exec_args": ["--print"], "version_args": ["--version"], "workdir": str(ROOT)},
     "pi": {"cli": "pi", "exec_args": ["--print", "--no-session", "--no-context-files"],
            "version_args": ["--version"], "workdir": str(Path.home())},
+    "vscode": {"cli": "code", "exec_args": ["-r"], "version_args": ["--version"], "workdir": str(ROOT)},
 }
+
+# 别名归一化: ASR 可能听成同音词/中英混说, 统一映射到标准 agent 名。
+AGENT_ALIASES: dict = {
+    "antigravity": "agy", "agy": "agy", "反重力": "agy", "安特格拉维蒂": "agy",
+    "codex": "codex", "可头大": "codex", "扣代码": "codex", "扣德斯": "codex",
+    "claude": "claude", "克劳德": "claude",
+    "pi": "pi",
+    "vscode": "vscode", "code": "vscode",
+}
+
+
+def normalize_agent(name: str) -> str:
+    """把用户/ASR 说出的 agent 名归一化到标准名(未知原样返回)。"""
+    n = str(name or "").strip().lower()
+    return AGENT_ALIASES.get(n, n)
 
 
 CREATE_NEW_CONSOLE = 0x00000010 if os.name == "nt" else 0
@@ -254,10 +284,11 @@ VISIBLE_SPECS: dict = {
 
 
 def spawn_visible(name: str, task: str) -> tuple[bool, str]:
-    """在指定 agent 的可见控制台窗口里执行任务(新窗口, 保留到用户关闭)。
+    """在指定 agent 的控制台窗口里后台执行任务(最小化启动, 不抢焦点)。
 
     任务内容经环境变量 ASON_TASK 传入(Unicode 安全), 窗口标题标明 agent,
-    执行结束后窗口保留输出并暂停。结果回流走各 agent 的 hooks/扩展
+    执行结束后窗口保留输出 15 秒(等结果推送给机器人播报)后自动关闭。
+    结果回流走各 agent 的 hooks/扩展
     (codex_hook / claude_hook / antigravity fusion / pi hooks-bridge)。
     """
     spec = VISIBLE_SPECS.get(name)
@@ -281,15 +312,20 @@ def spawn_visible(name: str, task: str) -> tuple[bool, str]:
             f"{quoted} \"%ASON_TASK%\"\r\n"
             "echo.\r\n"
             "echo [Asong] task finished, result synced to robot\r\n"
-            "pause\r\n"
+            "echo 窗口 15 秒后自动关闭(结果已同步给机器人播报)\r\n"
+            "timeout /t 15 /nobreak >nul\r\n"
         )
         cmd_file.write_text(content, encoding="utf-8")
         env = os.environ.copy()
         env["ASON_TASK"] = task
+        # 最小化后台启动(SW_SHOWMINNOACTIVE): 不抢焦点, 可手动恢复查看输出
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 7  # SW_SHOWMINNOACTIVE
         subprocess.Popen(
-            ["cmd", "/k", str(cmd_file)],
+            ["cmd", "/c", str(cmd_file)],
             cwd=spec["workdir"], env=env,
-            creationflags=CREATE_NEW_CONSOLE, close_fds=True,
+            creationflags=CREATE_NEW_CONSOLE, close_fds=True, startupinfo=si,
         )
         events_append(name, "progress", f"{name} 任务已在窗口启动: {task[:150]}")
         return True, f"已在 {spec['title']} 窗口启动「{task[:30]}」"
@@ -345,9 +381,14 @@ def query(agent: str, task: str, timeout_s: int = 120, visible: bool = True) -> 
     visible=True(默认, 机器人驱动): 在 agent 自己的可见窗口执行, 结果由 hooks 回流;
     visible=False: 无头执行并直接返回结果(脚本/自检用)。
     """
+    agent = normalize_agent(agent)
+    # Fail-Fast 存活预检: agent 未安装/CLI 不可用时立即返回, 严禁死等 timeout_s
+    ok, info = probe(agent)
+    if not ok:
+        return f"[{agent}] 未在电脑启动，请先打开它 ({info})"
     if visible:
-        ok, msg = spawn_visible(agent, task)
-        if ok:
+        ok2, msg = spawn_visible(agent, task)
+        if ok2:
             return msg
         # 窗口启动失败 -> 回退无头执行并返回结果
     res = run_agent(agent, task, timeout_s)

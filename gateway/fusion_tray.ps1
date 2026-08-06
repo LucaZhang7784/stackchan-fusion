@@ -15,7 +15,7 @@ try {
     $cfg = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
     $authToken = $cfg.auth_token
 } catch { }
-if (-not $authToken) { $authToken = 'f5c9a1e0-2b7d-4f3e-9a8b-6c4d2e1f0a3b' }
+if (-not $authToken) { $authToken = 'YOUR_GATEWAY_TOKEN' }
 
 $bridgeErr = 'D:\ProcessCenter\StackChan\fusion.firmware.0731\xiaozhi-mcp\bridge.err'
 $eventsFile = Join-Path $root 'data\agent_events.jsonl'
@@ -30,6 +30,14 @@ $script:robotOk = $false
 $script:tools = @()
 $script:gwPid = 0
 $script:detail = ''
+$script:errLog = Join-Path $root 'state\tray_err.log'
+
+function Write-TrayLog {
+    param([string]$msg)
+    try {
+        Add-Content -LiteralPath $script:errLog -Value ("[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg) -Encoding UTF8
+    } catch { }
+}
 
 # ---------------------------------------------------------------- 状态采集
 function Test-Gateway {
@@ -92,11 +100,35 @@ function Get-BridgeInfo {
     return @($procCount, $heartbeatMin, $online, $lastCall)
 }
 
-# ---------------------------------------------------------------- xiaozhi 播报队列统计
-# 机器人实际播报走 xiaozhi 链路: agent_pending 读 agent_events + 待确认问题。
-# (自建服务器的 pending.jsonl push 队列已不作为主队列统计)
+function Get-CloudRobot {
+    # 云链路播报可达性: 以网关最近一次 push ok 时间作为机器人播报链路健康代理。
+    # 自建服务器(8003)已停用(容器 Exited), 播报走 EMQX MQTT µ-law 推送。
+    $lastPush = ''
+    $logFile = Join-Path $root 'gateway.log'
+    if (Test-Path -LiteralPath $logFile) {
+        $line = Get-Content -LiteralPath $logFile -Tail 500 -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match 'push ok' } | Select-Object -Last 1
+        if ($line -and $line -match '^\[([^\]]+)\]') {
+            try {
+                $ts = [datetime]::Parse($matches[1])
+                $mins = [math]::Round(((Get-Date) - $ts).TotalMinutes, 1)
+                $lastPush = "$($matches[1]) (${mins} 分钟前)"
+            } catch { $lastPush = $matches[1] }
+        }
+    }
+    return $lastPush
+}
+
+# ---------------------------------------------------------------- 播报队列统计
+# 当前架构: state/pending.jsonl = 待推送播报队列(单 Worker 串行推流, robot_say/桥接写入);
+# agent_events = done/error 事件(由 _drain_pending 转入推送队列); confirmations = 待确认问题。
 function Get-QueueInfo {
-    # 返回 (事件数, 待确认数, 总队列数, 最近事件摘要)
+    # 返回 (待推送数, 事件数, 待确认数, 合计, 最近事件摘要)
+    $pending = 0
+    $pendingFile = Join-Path $root 'state\pending.jsonl'
+    if (Test-Path -LiteralPath $pendingFile) {
+        $pending = @(Get-Content -LiteralPath $pendingFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }).Count
+    }
     $events = @()
     if (Test-Path -LiteralPath $eventsFile) {
         $events = @(Get-Content -LiteralPath $eventsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
@@ -122,7 +154,7 @@ function Get-QueueInfo {
             if ($summary.Length -gt 60) { $summary = $summary.Substring(0, 60) + '...' }
         } catch { }
     }
-    return @($events.Count, $confirm, ($events.Count + $confirm), $summary)
+    return @($pending, $events.Count, $confirm, ($pending + $events.Count + $confirm), $summary)
 }
 
 # ---------------------------------------------------------------- 队列操作
@@ -145,12 +177,40 @@ function Get-QueueItems {
 }
 
 function Show-QueueMessages {
-    $evs, $pus = Get-QueueItems
     $lines = @()
-    if ($evs.Count) { $lines += '===== 待播报事件 (agent_events) ====='; $lines += $evs }
+    $evs = @()
+    if (Test-Path -LiteralPath $eventsFile) {
+        $evs = @(Get-Content -LiteralPath $eventsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+    }
+    if ($evs.Count) {
+        $lines += '===== 待播报事件 (agent_events) ====='
+        foreach ($e in $evs) {
+            try {
+                $o = $e | ConvertFrom-Json
+                $s = [string]$o.summary
+                $s = $s -replace '\s+', ' '
+                if ($s.Length -gt 180) { $s = $s.Substring(0, 180) + '...' }
+                $lines += "[$($o.ts)] $($o.agent) $($o.type): $s"
+            } catch { $lines += $e }
+        }
+    }
+    $pendingFile = Join-Path $root 'state\pending.jsonl'
+    $pus = @()
+    if (Test-Path -LiteralPath $pendingFile) {
+        $pus = @(Get-Content -LiteralPath $pendingFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+    }
     if ($pus.Count) {
         if ($lines.Count) { $lines += '' }
-        $lines += '===== 推送队列 (pending, 自建链路用) ====='; $lines += $pus
+        $lines += '===== 推送队列 (待播报) ====='
+        foreach ($p in $pus) {
+            try {
+                $o = $p | ConvertFrom-Json
+                $t = [string]$o.text
+                $t = $t -replace '\s+', ' '
+                if ($t.Length -gt 180) { $t = $t.Substring(0, 180) + '...' }
+                $lines += "[$($o.created_at)] $t"
+            } catch { $lines += $p }
+        }
     }
     if (-not $lines.Count) { $lines = '(队列为空)' }
     $form = New-Object System.Windows.Forms.Form
@@ -223,49 +283,67 @@ function Restore-BridgeIfDown {
 }
 
 # ---------------------------------------------------------------- 图标
+$script:iconCache = @{}
 function Get-StatusIcon {
     param([string]$state, [bool]$gw, [bool]$mcp, [bool]$robot)
-    $bmp = New-Object System.Drawing.Bitmap 32, 32
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $g.Clear([System.Drawing.Color]::Transparent)
+    $key = "$state|$gw|$mcp|$robot"
+    if ($script:iconCache.ContainsKey($key)) { return $script:iconCache[$key] }
+    try {
+        $bmp = New-Object System.Drawing.Bitmap 32, 32
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.Clear([System.Drawing.Color]::Transparent)
 
-    # 健康色渐变背景
-    switch ($state) {
-        'ok'   { $c1 = [System.Drawing.Color]::FromArgb(46, 204, 113); $c2 = [System.Drawing.Color]::FromArgb(22, 160, 133); break }
-        'warn' { $c1 = [System.Drawing.Color]::FromArgb(243, 156, 18); $c2 = [System.Drawing.Color]::FromArgb(211, 84, 0);  break }
-        default{ $c1 = [System.Drawing.Color]::FromArgb(231, 76, 60);  $c2 = [System.Drawing.Color]::FromArgb(192, 57, 43); break }
-    }
-    $bgRect = New-Object System.Drawing.Rectangle 1, 1, 30, 30
-    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush $bgRect, $c1, $c2, 45
-    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
-    $d = 14
-    $path.AddArc(1, 1, $d, $d, 180, 90)
-    $path.AddArc(17, 1, $d, $d, 270, 90)
-    $path.AddArc(17, 17, $d, $d, 0, 90)
-    $path.AddArc(1, 17, $d, $d, 90, 90)
-    $path.CloseFigure()
-    $g.FillPath($brush, $path)
+        # 健康色渐变背景
+        switch ($state) {
+            'ok'   { $c1 = [System.Drawing.Color]::FromArgb(46, 204, 113); $c2 = [System.Drawing.Color]::FromArgb(22, 160, 133); break }
+            'warn' { $c1 = [System.Drawing.Color]::FromArgb(243, 156, 18); $c2 = [System.Drawing.Color]::FromArgb(211, 84, 0);  break }
+            default{ $c1 = [System.Drawing.Color]::FromArgb(231, 76, 60);  $c2 = [System.Drawing.Color]::FromArgb(192, 57, 43); break }
+        }
+        $bgRect = New-Object System.Drawing.Rectangle 3, 8, 26, 21
+        $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush $bgRect, $c1, $c2, 45
+        $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $d = 8
+        $path.AddArc(3, 8, $d, $d, 180, 90)
+        $path.AddArc(29 - $d, 8, $d, $d, 270, 90)
+        $path.AddArc(29 - $d, 29 - $d, $d, $d, 0, 90)
+        $path.AddArc(3, 29 - $d, $d, $d, 90, 90)
+        $path.CloseFigure()
+        $g.FillPath($brush, $path)
 
-    # 三个状态点: 网关 / MCP / 机器人 (上 2 下 1)
-    $on  = [System.Drawing.Color]::White
-    $off = [System.Drawing.Color]::FromArgb(255, 255, 255, 160)
-    $dotBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
-    $dotOff   = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(120, 255, 255, 255))
-    $positions = @(
-        @{ X = 11; Y = 11; On = $gw },
-        @{ X = 19; Y = 11; On = $mcp },
-        @{ X = 15; Y = 19; On = $robot }
-    )
-    foreach ($p in $positions) {
-        $b = if ($p.On) { $dotBrush } else { $dotOff }
-        $g.FillEllipse($b, $p.X, $p.Y, 5, 5)
+        # 机器人样式: 圆角头部 + 天线 + 两只眼睛 + 嘴巴
+        # 状态映射: 左眼=网关, 右眼=MCP, 天线灯=机器人
+        $dotBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
+        $dotOff   = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(120, 255, 255, 255))
+
+        # 天线杆 + 天线灯(机器人状态)
+        $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(230, 255, 255, 255)), 2
+        $g.DrawLine($pen, 16, 8, 16, 3)
+        $antBrush = if ($robot) { $dotBrush } else { $dotOff }
+        $g.FillEllipse($antBrush, 13, 1, 6, 6)
+
+        # 左眼 = 网关, 右眼 = MCP
+        $eyeL = if ($gw)  { $dotBrush } else { $dotOff }
+        $g.FillEllipse($eyeL, 7, 14, 7, 7)
+        $eyeR = if ($mcp) { $dotBrush } else { $dotOff }
+        $g.FillEllipse($eyeR, 18, 14, 7, 7)
+
+        # 嘴巴(音箱格栅)
+        $g.FillRectangle($dotBrush, 11, 24, 10, 2)
+        $g.Dispose()
+        $hicon = $bmp.GetHicon()
+        $icon = [System.Drawing.Icon]::FromHandle($hicon)
+        $bmp.Dispose()
+        # 图标按状态缓存: 避免每 5 秒生成导致 GDI 句柄泄漏(GetHicon GDI+ 错误)
+        $script:iconCache[$key] = $icon
+        return $icon
+    } catch {
+        Write-TrayLog "Get-StatusIcon 生成失败, 降级缓存: $($_.Exception.Message)"
+        if ($script:iconCache.Count -gt 0) {
+            return $script:iconCache.Values | Select-Object -First 1
+        }
+        return $null
     }
-    $g.Dispose()
-    $hicon = $bmp.GetHicon()
-    $icon = [System.Drawing.Icon]::FromHandle($hicon)
-    $bmp.Dispose()
-    return $icon
 }
 
 # ---------------------------------------------------------------- 菜单
@@ -287,20 +365,23 @@ function Add-StatusItem {
 function Build-Menu {
     param([string]$state, [string]$label)
     $queue = Get-QueueInfo
-    $pending = $queue[2]
-    $confirm = $queue[1]
+    $pending = $queue[0]
+    $events = $queue[1]
+    $confirm = $queue[2]
+    $total = $queue[3]
     $bridge = Get-BridgeInfo
     $bridgeProc = $bridge[0]; $hbMin = $bridge[1]; $bridgeOnline = $bridge[2]; $lastCall = $bridge[3]
+    $lastPush = Get-CloudRobot
 
-    $menu.DropDownItems.Clear()
+    $script:menu.Items.Clear()
 
     # 总状态头
     $head = New-Object System.Windows.Forms.ToolStripMenuItem
     $head.Text = "StackChan Fusion  [$label]   $(Get-Date -Format 'HH:mm:ss')"
     $head.Enabled = $false
     $head.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9, [System.Drawing.FontStyle]::Bold)
-    $menu.DropDownItems.Add($head) | Out-Null
-    $menu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+    $script:menu.Items.Add($head) | Out-Null
+    $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
     # Gateway 子菜单
     $gwMenu = New-Object System.Windows.Forms.ToolStripMenuItem
@@ -308,35 +389,38 @@ function Build-Menu {
     Add-StatusItem $gwMenu "PID:" "$($script:gwPid)" $(if($script:gwOk){'ok'}else{'bad'})
     Add-StatusItem $gwMenu "工具:" "$($script:tools.Count) 个" ''
     Add-StatusItem $gwMenu "播报队列:" "$pending 条" $(if($pending -gt 0){'warn'}else{'ok'})
-    $menu.DropDownItems.Add($gwMenu) | Out-Null
+    $script:menu.Items.Add($gwMenu) | Out-Null
 
     # MCP 子菜单
     $mcpMenu = New-Object System.Windows.Forms.ToolStripMenuItem
     $mcpMenu.Text = "MCP Toolkit  $(if($script:mcpOk){'● 正常'}else{'○ 异常'})"
     Add-StatusItem $mcpMenu "Profile:" "stackchan" $(if($script:mcpOk){'ok'}else{'bad'})
     Add-StatusItem $mcpMenu "客户端:" "codex / claude-code / vscode" ''
-    $menu.DropDownItems.Add($mcpMenu) | Out-Null
+    $script:menu.Items.Add($mcpMenu) | Out-Null
 
-    # 机器人链路子菜单
+    # 机器人链路子菜单 (云链路为主: xiaozhi.me 云端 + EMQX 主动推送; 自建服务器已停用)
     $robotMenu = New-Object System.Windows.Forms.ToolStripMenuItem
-    $robotMenu.Text = "机器人链路  $(if($bridgeOnline){'● 在线'}else{'○ 离线'})"
-    Add-StatusItem $robotMenu "Bridge进程:" "$bridgeProc 个" $(if($bridgeProc -ge 1){'ok'}else{'bad'})
+    $robotMenu.Text = "机器人链路  $(if($lastPush){'● 播报正常'}else{'○ 暂无推送'})"
+    Add-StatusItem $robotMenu "播报链路:" $(if($lastPush){"最近推送 $lastPush"}else{'暂无推送记录'}) $(if($lastPush){'ok'}else{'warn'})
+    Add-StatusItem $robotMenu "自建服务器:" '已停用(容器 Exited)' 'warn'
+    Add-StatusItem $robotMenu "云桥接(备用):" "$bridgeProc 个进程" $(if($bridgeProc -ge 1){'ok'}else{'warn'})
     $hbBadge = if ($hbMin -ge 0 -and $hbMin -le 3) { 'ok' } elseif ($hbMin -ge 0) { 'warn' } else { 'bad' }
-    Add-StatusItem $robotMenu "心跳:" $(if($hbMin -ge 0){"$hbMin 分钟前"}else{'无'}) $hbBadge
+    Add-StatusItem $robotMenu "云心跳:" $(if($hbMin -ge 0){"$hbMin 分钟前"}else{'无'}) $hbBadge
     Add-StatusItem $robotMenu "接收消息:" $(if($lastCall){$lastCall}else{'暂无'}) ''
-    $menu.DropDownItems.Add($robotMenu) | Out-Null
+    $script:menu.Items.Add($robotMenu) | Out-Null
 
     # 消息/待处理子菜单
     $msgMenu = New-Object System.Windows.Forms.ToolStripMenuItem
-    $msgMenu.Text = "播报队列 (xiaozhi)"
-    Add-StatusItem $msgMenu "待播报事件:" "$($queue[0]) 条" $(if($queue[0] -gt 0){'warn'}else{'ok'})
+    $msgMenu.Text = "播报队列"
+    Add-StatusItem $msgMenu "待推送:" "$pending 条" $(if($pending -gt 0){'warn'}else{'ok'})
+    Add-StatusItem $msgMenu "待播报事件:" "$events 条" $(if($events -gt 0){'warn'}else{'ok'})
     Add-StatusItem $msgMenu "待确认问题:" "$confirm 个" $(if($confirm -gt 0){'bad'}else{'ok'})
-    if ($queue[3]) { Add-StatusItem $msgMenu "最近事件:" "$($queue[3])" '' }
-    $menu.DropDownItems.Add($msgMenu) | Out-Null
+    if ($queue[4]) { Add-StatusItem $msgMenu "最近事件:" "$($queue[4])" '' }
+    $script:menu.Items.Add($msgMenu) | Out-Null
 
     # 队列操作子菜单
     $queueMenu = New-Object System.Windows.Forms.ToolStripMenuItem
-    $queueMenu.Text = "队列操作  ($($queue[2]) 条)"
+    $queueMenu.Text = "队列操作  ($total 条)"
     $itemShowQueue = New-Object System.Windows.Forms.ToolStripMenuItem
     $itemShowQueue.Text = '显示队列消息内容...'
     $itemShowQueue.Add_Click({ Show-QueueMessages }) | Out-Null
@@ -364,16 +448,16 @@ function Build-Menu {
         }
     }) | Out-Null
     $queueMenu.DropDownItems.Add($itemClearConfirm) | Out-Null
-    $menu.DropDownItems.Add($queueMenu) | Out-Null
+    $script:menu.Items.Add($queueMenu) | Out-Null
 
-    $menu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
+    $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
     $itemDetail = New-Object System.Windows.Forms.ToolStripMenuItem
     $itemDetail.Text = '查看状态详情'
     $itemDetail.Add_Click({
         [System.Windows.Forms.MessageBox]::Show($script:detail, 'StackChan Fusion 状态', 'OK', 'Information') | Out-Null
     })
-    $menu.DropDownItems.Add($itemDetail) | Out-Null
+    $script:menu.Items.Add($itemDetail) | Out-Null
 
     $itemRestart = New-Object System.Windows.Forms.ToolStripMenuItem
     $itemRestart.Text = '重启网关'
@@ -386,72 +470,82 @@ function Build-Menu {
             -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'run_gateway.ps1')`"") `
             -WindowStyle Hidden | Out-Null
     })
-    $menu.DropDownItems.Add($itemRestart) | Out-Null
+    $script:menu.Items.Add($itemRestart) | Out-Null
 
     $itemExit = New-Object System.Windows.Forms.ToolStripMenuItem
     $itemExit.Text = '退出托盘'
     $itemExit.Add_Click({
-        $notify.Visible = $false
-        $timer.Stop()
+        $script:notify.Visible = $false
+        $script:timer.Stop()
         [System.Windows.Forms.Application]::Exit()
     })
-    $menu.DropDownItems.Add($itemExit) | Out-Null
+    $script:menu.Items.Add($itemExit) | Out-Null
 }
 
 # ---------------------------------------------------------------- 轮询
 function Update-Status {
     # 保险: Explorer 重启/通知区异常时, 图标可能消失, 轮询时重新置可见
-    if ($notify -and -not $notify.Visible) { $notify.Visible = $true }
-    $gwDetail = ''; $mcpDetail = ''; $robotDetail = ''
-    $g = Test-Gateway -detailRef ([ref]$gwDetail)
-    Restore-GatewayIfDown $g
-    $m = Test-McpToolkit -detailRef ([ref]$mcpDetail)
-    $bridge = Get-BridgeInfo
-    $r = $bridge[2]
-    Restore-BridgeIfDown $r
+    if ($script:notify -and -not $script:notify.Visible) { $script:notify.Visible = $true }
+    try {
+        $gwDetail = ''; $mcpDetail = ''; $robotDetail = ''
+        $g = Test-Gateway -detailRef ([ref]$gwDetail)
+        Restore-GatewayIfDown $g
+        $m = Test-McpToolkit -detailRef ([ref]$mcpDetail)
+        $bridge = Get-BridgeInfo
+        $r = $bridge[2]
+        Restore-BridgeIfDown $r
 
-    if ($g -and $m -and $r) {
-        $state = 'ok';   $label = '全部正常'
-    } elseif ($g) {
-        $state = 'warn'; $label = '部分异常'
-    } else {
-        $state = 'bad';  $label = '网关离线'
+        if ($g -and $m -and $r) {
+            $state = 'ok';   $label = '全部正常'
+        } elseif ($g) {
+            $state = 'warn'; $label = '部分异常'
+        } else {
+            $state = 'bad';  $label = '网关离线'
+        }
+
+        $queue = Get-QueueInfo
+        $pending = $queue[0]
+        $confirm = $queue[2]
+        $total = $queue[3]
+        $script:detail = "【Gateway】$gwDetail`n【MCP】$mcpDetail`n【Robot】bridge=$($bridge[0]) 进程, 心跳=$($bridge[1]) 分钟, 最近推送: $(Get-CloudRobot)`n【播报队列】待推送 $pending 条, 待播报事件 $($queue[1]) 条, 待确认 $confirm 个, 合计 $total 条"
+
+        $script:notify.Icon = Get-StatusIcon $state $g $m $r
+        $tooltip = "StackChan Fusion [$label]`n网关:$(if($g){'在线'}else{'离线'}) MCP:$(if($m){'正常'}else{'异常'}) 机器人:$(if($r){'在线'}else{'离线'})`n队列:$pending 待确认:$confirm"
+        if ($script:notify.Text -ne $tooltip) { $script:notify.Text = $tooltip }
+
+        Build-Menu $state $label
+
+        if ($script:lastState -ne '' -and $script:lastState -ne $state) {
+            $title = if ($state -eq 'ok') { 'StackChan 恢复' } elseif ($state -eq 'bad') { 'StackChan 网关离线' } else { 'StackChan 部分组件异常' }
+            $script:notify.ShowBalloonTip(3000, $title, $script:detail, [System.Windows.Forms.ToolTipIcon]::Warning)
+        }
+        $script:lastState = $state
+    } catch {
+        Write-TrayLog "Update-Status 异常: $($_.Exception.Message)`n$($_.ScriptStackTrace)"
     }
-
-    $queue = Get-QueueInfo
-    $pending = $queue[2]
-    $confirm = $queue[1]
-    $script:detail = "【Gateway】$gwDetail`n【MCP】$mcpDetail`n【Robot】bridge=$($bridge[0]) 进程, 心跳=$($bridge[1]) 分钟`n【播报队列】待播报 $($queue[0]) 条, 待确认 $confirm 个, 合计 $pending 条"
-
-    $notify.Icon = Get-StatusIcon $state $g $m $r
-    $tooltip = "StackChan Fusion [$label]`n网关:$(if($g){'在线'}else{'离线'}) MCP:$(if($m){'正常'}else{'异常'}) 机器人:$(if($r){'在线'}else{'离线'})`n队列:$pending 待确认:$confirm"
-    if ($notify.Text -ne $tooltip) { $notify.Text = $tooltip }
-
-    Build-Menu $state $label
-
-    if ($script:lastState -ne '' -and $script:lastState -ne $state) {
-        $title = if ($state -eq 'ok') { 'StackChan 恢复' } elseif ($state -eq 'bad') { 'StackChan 网关离线' } else { 'StackChan 部分组件异常' }
-        $notify.ShowBalloonTip(3000, $title, $script:detail, [System.Windows.Forms.ToolTipIcon]::Warning)
-    }
-    $script:lastState = $state
 }
 
 # ---------------------------------------------------------------- 界面
-$notify = New-Object System.Windows.Forms.NotifyIcon
-$notify.Icon = Get-StatusIcon 'warn' $false $false $false
-$notify.Text = 'StackChan Fusion 启动中...'
-$notify.Visible = $true
-$notify.Add_MouseDoubleClick({
+$script:notify = New-Object System.Windows.Forms.NotifyIcon
+$script:notify.Icon = Get-StatusIcon 'warn' $false $false $false
+$script:notify.Text = 'StackChan Fusion 启动中...'
+$script:notify.Visible = $true
+$script:notify.Add_MouseDoubleClick({
     [System.Windows.Forms.MessageBox]::Show($script:detail, 'StackChan Fusion 状态', 'OK', 'Information') | Out-Null
 })
 
-$menu = New-Object System.Windows.Forms.ContextMenuStrip
-$notify.ContextMenuStrip = $menu
+$script:menu = New-Object System.Windows.Forms.ContextMenuStrip
+$script:notify.ContextMenuStrip = $script:menu
+Write-TrayLog "托盘初始化: menu=$($null -ne $script:menu) notify=$($null -ne $script:notify)"
 
-$timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 5000
-$timer.Add_Tick({ Update-Status })
-$timer.Start()
+$script:timer = New-Object System.Windows.Forms.Timer
+$script:timer.Interval = 5000
+$script:timer.Add_Tick({
+    Update-Status
+})
+$script:timer.Start()
 
+Write-TrayLog "进入消息循环"
 Update-Status
 [System.Windows.Forms.Application]::Run()
+Write-TrayLog "消息循环退出"

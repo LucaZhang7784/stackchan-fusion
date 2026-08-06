@@ -28,13 +28,17 @@ fusion_gateway.py — StackChan x xiaozhi-esp32-server x Codex/Claude Code 融�
 from __future__ import annotations
 
 import argparse
+import asyncio
+import audioop
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -42,7 +46,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import edge_tts
 from mcp.server.fastmcp import FastMCP
+import paho.mqtt.client as paho
 
 import agents_core
 
@@ -64,9 +70,12 @@ DEFAULT_CONFIG = {
     "max_timeout_s": 600,
     "http_host": "0.0.0.0",
     "http_port": 8010,
-    "push_api_url": "http://127.0.0.1:8003/api/push",
-    "push_secret": "YOUR_PUSH_SECRET",
     "push_interval_s": 5,
+    "push_mqtt_host": "broker-cn.emqx.io",
+    "push_mqtt_port": 1883,
+    "push_topic_prefix": "stackchan",
+    "push_tts_voice": "zh-HK-HiuMaanNeural",  # 女声粤语曉曼(中英混杂); 备选 ja-JP-NanamiNeural(日语) / zh-TW-HsiaoChenNeural(台普)
+    "push_tts_rate": "+20%",
 }
 
 TOOL_NAMES = [
@@ -76,7 +85,17 @@ TOOL_NAMES = [
 ]
 
 STARTED_AT = time.time()
+PENDING_TTL_SECONDS = 300  # Phase 7.1: 待播报消息 5 分钟 TTL, 根治开机/重启后倒灌旧消息
 CFG: dict = {}
+
+
+def _ensure_cfg() -> None:
+    """模块级 CFG 在 import 时未初始化(仅在 __main__ 加载), 直接调用工具会
+    拿到空配置导致 push_tts_voice 回退成普通话晓晓。这里按需补齐, 保证
+    import 场景与主进程行为一致。"""
+    global CFG
+    if not CFG:
+        CFG = load_config()
 
 
 def log(message: str) -> None:
@@ -93,6 +112,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+_PROC_START = _now()  # 进程启动时刻(healthz 上报, 托盘显示), 而非请求当前时间
+
+
+def _is_expired(created_at: str) -> bool:
+    """判断条目是否超过 5 分钟 TTL(解析失败保守保留)。"""
+    try:
+        ts = datetime.fromisoformat(created_at)
+        return (datetime.now(ts.tzinfo) - ts).total_seconds() > PENDING_TTL_SECONDS
+    except Exception:
+        return False
+
+
 def load_config(config_path: str | None = None) -> dict:
     env_path = os.environ.get("FUSION_CONFIG", "")
     path = Path(config_path) if config_path else (Path(env_path) if env_path else (ROOT / "config.json"))
@@ -102,7 +133,9 @@ def load_config(config_path: str | None = None) -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 cfg.update(json.load(f))
         except Exception as e:
-            log(f"config load error: {e}")
+            # 防复发 Fail-Fast: config.json 存在但语法错误, 严禁静默回退默认配置
+            log(f"[FATAL] config.json 语法错误, 拒绝启动: {e}")
+            raise RuntimeError(f"[FATAL] config.json 语法错误, 拒绝启动: {e}") from e
     if str(cfg.get("exec_cwd", ".")) == ".":
         cfg["exec_cwd"] = str(ROOT)
     cfg["log_file"] = str(ROOT / "gateway.log")
@@ -165,7 +198,17 @@ def pending_items() -> list[dict]:
                     items.append(json.loads(line))
                 except Exception:
                     items.append({"id": "", "text": line, "source": "legacy", "created_at": ""})
-    return items
+    # Phase 7.1: 5 分钟 TTL - 丢弃过期旧消息并物理清理, 防重启后倒灌
+    fresh = [o for o in items if not _is_expired(o.get("created_at", ""))]
+    if len(fresh) != len(items):
+        log(f"pending TTL: 丢弃 {len(items) - len(fresh)} 条过期消息(>5min)")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                for o in fresh:
+                    f.write(json.dumps(o, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+    return fresh
 
 
 def pending_remove_ids(ids: set[str]) -> int:
@@ -180,43 +223,306 @@ def pending_remove_ids(ids: set[str]) -> int:
     return len(kept)
 
 
-def push_send(text: str) -> tuple[bool, str]:
-    """调用 xiaozhi 服务器 /api/push, 让机器人立即播报。"""
-    url = CFG.get("push_api_url", "")
-    if not url:
-        return False, "未配置 push_api_url"
-    secret = str(CFG.get("push_secret", "") or "")
-    payload = json.dumps({"mac": CFG.get("robot_mac", ""), "text": text, "secret": secret}, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, method="POST", headers={"Content-Type": "application/json", "User-Agent": "fusion-gateway/0.1"})
+def _tts_text(text: str, limit: int = 180) -> str:
+    """把推送文本转成适合 TTS 朗读的形式: 去 markdown 符号/超链接, 压空白, 超长截断。"""
+    import re
+    t = re.sub(r"[#*_`>|]", " ", str(text or ""))
+    t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)  # markdown 链接 -> 文字
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) > limit:
+        t = t[:max(0, limit - len("……后面省略。"))].rstrip() + "……后面省略。"
+    return t
+
+
+_FFMPEG = r"D:\ProcessCenter\StackChan\tools\ffmpeg-9.0-essentials_build\bin\ffmpeg.exe"
+_push_client: paho.Client | None = None
+
+# ---- 加固 2: ACK 送达闭环(固件收到 START 回发 stackchan/{mac}/ack) ----
+_ACK_TIMEOUT_S = 2.0
+_RETRY_BACKOFF_S = 30
+_acked_texts: dict = {}
+_acked_lock = threading.Lock()
+_recent_msg_uids: dict = {}  # 幂等记忆: msg_uid -> ts(5 分钟内重复上报静默丢弃)
+
+
+def _ack_topic() -> str:
+    return f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/ack"
+
+
+def _on_ack(client, userdata, msg) -> None:
+    """固件 ACK 回执: payload 为 msg_uid(兼容旧固件的文本回执)。"""
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = json.loads(resp.read().decode("utf-8", errors="replace"))
-            return bool(body.get("ok")), body.get("error") or "ok"
+        text = msg.payload.decode("utf-8", "replace")
+        with _acked_lock:
+            _acked_texts[text] = time.time()
+    except Exception:
+        pass
+
+
+def _on_push_connect(client, userdata, flags, rc, properties=None) -> None:
+    # paho 重连(clean session)后订阅会丢, 每次连接成功都重订 ACK 主题
+    try:
+        client.subscribe(_ack_topic(), 0)
+    except Exception:
+        pass
+
+
+def _wait_ack(text: str, timeout_s: float = _ACK_TIMEOUT_S) -> bool:
+    """等待固件对本次 START 的 ACK; 顺带清理 60s 前的旧 ACK。"""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        with _acked_lock:
+            if _acked_texts.get(text):
+                return True
+        time.sleep(0.1)
+    with _acked_lock:
+        stale = [k for k, v in _acked_texts.items() if time.time() - v > 60]
+        for k in stale:
+            del _acked_texts[k]
+    return False
+
+
+def _pending_has_id(entry_id: str) -> bool:
+    """pending.jsonl 是否已存在该 id(幂等防护)。"""
+    if not entry_id:
+        return False
+    try:
+        path = Path(CFG["pending_file"])
+        if not path.exists():
+            return False
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                if json.loads(line).get("id") == entry_id:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _push_mqtt() -> paho.Client:
+    global _push_client
+    _ensure_cfg()
+    if _push_client is None or not _push_client.is_connected():
+        try:
+            _push_client.loop_stop()  # 清理旧后台 Paho 网络线程, 防断连重建时遗留
+        except Exception:
+            pass
+        _push_client = paho.Client(client_id="fusion-gateway", protocol=paho.MQTTv311)
+        _push_client.on_message = _on_ack
+        _push_client.on_connect = _on_push_connect
+        _push_client.connect(str(CFG.get("push_mqtt_host", "127.0.0.1")), int(CFG.get("push_mqtt_port", 1883)), 10)
+        _push_client.loop_start()
+        _push_client.subscribe(_ack_topic(), 0)
+    return _push_client
+
+# ---- 指标 1: 线程安全 Push FIFO + 单 Worker(严禁多 Agent 消息并发交错倾倒) ----
+_push_queue: queue.Queue = queue.Queue()
+_push_enqueued: set[str] = set()
+_enqueue_lock = threading.Lock()
+
+
+def _enqueue_push(text: str, source: str = "gateway", kind: str = "pending", record_id: str = "") -> None:
+    """统一入队(线程安全)。所有主动推送(robot_say / agent_event / _drain_pending)
+    必须走这里; 同一 record_id 只允许入队一次, 防轮询并发重复推流。"""
+    with _enqueue_lock:
+        if record_id and record_id in _push_enqueued:
+            return
+        if record_id:
+            _push_enqueued.add(record_id)
+    _push_queue.put({"text": str(text or ""), "source": source, "kind": kind, "id": record_id})
+
+
+def _pending_update(entry_id: str, pushed: bool | None = None, attempted_at: float | None = None) -> None:
+    """按 id 更新 pending 条目字段(保留作唤醒补播兜底, 而非删除)。
+    机器人唤醒时 robot_pending/agent_pending 朗读后 clear, 或 5 分钟 TTL 清理。"""
+    if not entry_id:
+        return
+    path = Path(CFG["pending_file"])
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        out: list[str] = []
+        changed = False
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except Exception:
+                out.append(line)
+                continue
+            if o.get("id") == entry_id:
+                if pushed is not None:
+                    o["pushed"] = pushed
+                if attempted_at is not None:
+                    o["attempted_at"] = attempted_at
+                changed = True
+            out.append(json.dumps(o, ensure_ascii=False))
+        if changed:
+            path.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def pending_mark_pushed(entry_id: str) -> None:
+    """收到机器人 ACK 后标记 pushed(已送达), 保留供唤醒朗读兜底。"""
+    _pending_update(entry_id, pushed=True)
+
+
+def pending_mark_attempted(entry_id: str) -> None:
+    """推送尝试后记录 attempted_at, _drain_pending 在退避窗口内不重试。"""
+    _pending_update(entry_id, attempted_at=time.time())
+
+
+def _finish_push_record(kind: str, record_id: str, ok: bool) -> None:
+    with _enqueue_lock:
+        _push_enqueued.discard(record_id)
+    if ok and record_id:
+        if kind == "event":
+            agents_core.events_remove_ids({record_id})
+        elif kind == "pending":
+            pending_remove_ids({record_id})  # 规范 3: ACK 确认送达 -> 物理删除(ACK-and-Delete)
+
+
+def _push_worker() -> None:
+    """单 Worker: 逐条出队推流, 前一条播报完毕(音频时长 + 0.5s)才推下一条。
+    完整原文经 log 落盘; 失败保留队列供机器人唤醒补播。"""
+    while True:
+        try:
+            item = _push_queue.get()
+            text = item.get("text", "")
+            record_id = item.get("id", "")
+            kind = item.get("kind", "pending")
+            msg_uid = str(record_id or "")
+            if not text.strip():
+                _finish_push_record(kind, record_id, True)
+                continue
+            ok, err, dur, sent_text = push_send(text, msg_uid)
+            if ok:
+                if _wait_ack(msg_uid or sent_text):
+                    log(f"push ack [{item.get('source')}]: {text[:150]}")
+                    _finish_push_record(kind, record_id, True)  # 已送达 -> 标记 pushed
+                else:
+                    log(f"push no-ack(机器人离线? 保留兜底): {text[:150]}")
+                    _finish_push_record(kind, record_id, False)
+                    pending_mark_attempted(record_id)  # 退避期内不重试
+            else:
+                log(f"push fail: {err} :: {text[:150]}")
+                _finish_push_record(kind, record_id, False)
+                pending_mark_attempted(record_id)
+            # 前一条播完(音频时长+0.5s)再取下一条
+            time.sleep(max(0.0, (dur or 0.0) + 0.5))
+        except Exception as e:
+            log(f"push worker error: {e}")
+            time.sleep(1.0)
+
+
+# 推送音频链路: 16kHz 单声道, 先出 s16le PCM 再转 µ-law(G.711), 60ms/帧 = 960B/帧。
+# 不传 Opus: 网关 opus.dll 帧头非标准, ESP 解码器只解 1/6; 传 µ-law 把带宽从
+# 32KB/s 减半到 16KB/s, 配合 ESP lwIP 窗口 16KB 后公网 RTT(~0.5s)下仍有余量,
+# 根治「报文被 TCP 窗口卡顿导致播报卡顿」。
+_PUSH_SAMPLE_RATE = 16000
+_PUSH_FRAME_MS = 60
+_PUSH_FRAME_BYTES = _PUSH_SAMPLE_RATE * 1 * _PUSH_FRAME_MS // 1000  # 960 (µ-law 1B/采样)
+_PUSH_BATCH_FRAMES = 8  # 8帧=480ms 音频/批, 报文 ~7.7KB < 固件 8KB MQTT buffer
+_PUSH_BATCH_INTERVAL_S = 0.05  # 轻度节流防突发, 不影响实时性(480ms 音频 >> 50ms 间隔)
+
+async def _edge_tts_mp3(text: str, out_path: str) -> None:
+    _ensure_cfg()
+    comm = edge_tts.Communicate(text, CFG.get("push_tts_voice", "zh-CN-XiaoxiaoNeural"), rate=CFG.get("push_tts_rate", "+20%"))
+    async for chunk in comm.stream():
+        if chunk["type"] == "audio":
+            with open(out_path, "ab") as f:
+                f.write(chunk["data"])
+
+
+def _edge_tts_mp3_sync(text: str, out_path: str) -> None:
+    """在独立线程中运行 asyncio 协程, 兼容 MCP 工具在事件循环线程内被调用的情况。"""
+    result: dict = {}
+
+    def runner() -> None:
+        try:
+            asyncio.run(_edge_tts_mp3(text, out_path))
+            result["ok"] = True
+        except Exception as e:
+            result["err"] = e
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join()
+    if result.get("err"):
+        raise result["err"]
+
+
+def _tts_ulaw_frames(text: str) -> list[bytes]:
+    """EdgeTTS -> ffmpeg 出 16kHz 单声道 s16le PCM -> µ-law(1B/采样), 切成 60ms 帧(960B/帧)。
+    16k 与固件 I2S 输出同频; 固件端 µ-law 查表还原成 s16le 进播放队列出声。"""
+    mp3 = os.path.join(tempfile.gettempdir(), "fusion_push_tts.mp3")
+    if os.path.exists(mp3):
+        os.remove(mp3)
+    _edge_tts_mp3_sync(text, mp3)
+    pcm = subprocess.run([_FFMPEG, "-y", "-i", mp3, "-f", "s16le",
+                          "-ar", str(_PUSH_SAMPLE_RATE), "-ac", "1", "-"],
+                         capture_output=True).stdout
+    ulaw = audioop.lin2ulaw(pcm, 2)
+    return [ulaw[i:i + _PUSH_FRAME_BYTES]
+            for i in range(0, len(ulaw) - len(ulaw) % _PUSH_FRAME_BYTES, _PUSH_FRAME_BYTES)]
+
+
+def push_send(text: str, msg_uid: str = "") -> tuple[bool, str, float, str]:
+    """MQTT 主动推送: EdgeTTS 合成 -> 16k µ-law 60ms 帧 -> stackchan/{mac}/push。
+    指标 3: 语音推流收紧为 150 字口语摘要(≤15s); 完整原文由调用方保留在
+    pending.jsonl 与日志。START 报头带 msg_uid(\x01+msg_uid+\x00+text), 供固件 ACK 回执。
+    返回 (ok, err, 音频时长秒, 实际发送文本)。"""
+    try:
+        text = _tts_text(text, limit=150)
+        topic = f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/push"
+        client = _push_mqtt()
+        # 先合成全部 µ-law 帧, 再发 START: 严禁机器人先进 Speaking 空等 TTS
+        # (否则 3s 断流看门狗会误判为断流, 把帧全部丢弃 = 播报被掐掉)
+        frames = _tts_ulaw_frames(text)
+        # QoS0 + 8帧/条批量: 每批 7682B; 固件 MQTT buffer 8KB + poll 读超时 5s 防断连
+        if msg_uid:
+            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=0)
+        else:
+            client.publish(topic, b"\x01" + text.encode("utf-8"), qos=0)
+        for i in range(0, len(frames), _PUSH_BATCH_FRAMES):
+            if i > 0:
+                time.sleep(_PUSH_BATCH_INTERVAL_S)  # 节流: 首包立发, 后续 170ms/批
+            batch = frames[i:i + _PUSH_BATCH_FRAMES]
+            payload = b"\x02" + bytes([len(batch)]) + b"".join(batch)
+            client.publish(topic, payload, qos=0)
+        client.publish(topic, b"\x03", qos=0)
+        return True, "ok", len(frames) * (_PUSH_FRAME_MS / 1000.0), text
     except Exception as e:
-        return False, str(e)
+        return False, str(e), 0.0, ""
 
 
 def _drain_pending() -> tuple[int, int]:
-    """把待播报消息逐条推给机器人; 返回 (成功数, 失败数)。"""
+    """把待播报消息统一入队(单 Worker 串行推流); 返回 (入队数, 失败数)。
+    同一 record_id 去重, 由 Worker 推送成功后移除; 失败保留供唤醒补播。"""
     items = pending_items()
-    if not items:
-        return 0, 0
-    pushed_ids: set[str] = set()
-    fail = 0
+    enqueued = 0
+    now = time.time()
     for o in items:
+        if o.get("pushed"):
+            continue  # 已推送过, 仅作唤醒补播兜底, 不重复推流
+        att = o.get("attempted_at")
+        if isinstance(att, (int, float)) and now - att < _RETRY_BACKOFF_S:
+            continue  # 推送尝试失败后 30s 退避, 防离线时每 5s 重推刷屏
         text = str(o.get("text", "")).strip()
         if not text:
-            pushed_ids.add(o.get("id", ""))
             continue
-        ok, err = push_send(text)
-        if ok:
-            log(f"push ok: {text[:80]}")
-            pushed_ids.add(o.get("id", ""))
-        else:
-            fail += 1
-            log(f"push fail: {err} :: {text[:80]}")
-    removed = pending_remove_ids(pushed_ids) if pushed_ids else 0
-    return len(pushed_ids), fail
+        _enqueue_push(text, "pending", "pending", o.get("id", ""))
+        enqueued += 1
+    return enqueued, 0
 
 
 def _push_loop() -> None:
@@ -312,41 +618,56 @@ mcp = FastMCP("fusion-gateway")
 
 @mcp.tool()
 def robot_status() -> str:
-    """分层连通性自检: 1)Funnel OTA 2)MCP接入点 3)服务端MCP工具注册 4)机器人在线+设备工具数。Codex/Claude/机器人任一方调用。"""
+    """分层连通性自检(当前云链路架构, 不依赖已停用的 xiaozhi-esp32-server 容器):
+    1) 云桥接 xiaozhi-mcp(mcp_pipe+server, 心跳) 2) 网关 MCP 工具注册
+    3) 推送链路(EMQX MQTT µ-law, 最近 push ok) 4) 机器人最近活动(云桥接工具调用)
+    5) 自建服务器状态。Codex/Claude/机器人任一方调用。"""
     lines = []
-    # 1) Funnel OTA
-    status, body = http_get(CFG["ota_url"], 15)
-    ota_ok = status == 200 and "websocket" in body.lower()
-    lines.append(f"[1] Funnel OTA: {'PASS' if ota_ok else 'FAIL'} (HTTP {status})")
-    # 2) MCP 接入点 health
+    # 1) 云桥接 xiaozhi-mcp: 进程数 + bridge.err 心跳(≤3min 视为在线)
+    bridge_err = ROOT.parent / "xiaozhi-mcp" / "bridge.err"
+    procs = 0
     try:
-        status2, body2 = http_get(CFG["endpoint_health_url"], 10)
-        data = json.loads(body2) if body2 else {}
-        result = data.get("result") or {}
-        conns = result.get("connections") or {}
-        ep_ok = result.get("status") == "success"
-        lines.append(
-            f"[2] MCP接入点 health: {'PASS' if ep_ok else 'FAIL'} | "
-            f"tool={conns.get('tool_connections')} robot={conns.get('robot_connections')} total={conns.get('total_connections')}"
-        )
+        ps = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'xiaozhi-mcp' } | Measure-Object | Select-Object -ExpandProperty Count"],
+            capture_output=True, text=True, timeout=10, creationflags=_create_no_window())
+        out = (ps.stdout or "").strip()
+        procs = int(out) if out.isdigit() else 0
     except Exception as e:
-        lines.append(f"[2] MCP接入点 health: FAIL ({e})")
-    # 3) 服务端 MCP 工具注册
-    logs = docker_logs_since(CFG.get("docker_log_lookback_minutes", 120), CFG["docker_container"])
-    reg = re.findall(r"服务端MCP客户端已连接，可用工具:\s*(\[[^\]]*\])", logs)
-    last_tools = reg[-1] if reg else "[]"
-    fusion_ok = "fusion" in last_tools.lower() or "codex_query" in last_tools.lower()
-    lines.append(f"[3] 服务端MCP注册: {'PASS 已注册融合工具' if fusion_ok else 'FAIL 当前工具=' + last_tools}")
-    # 4) 机器人在线 + 设备工具数
-    mac_plain = CFG["robot_mac"].lower().replace(":", "")
-    mac_colon = CFG["robot_mac"].lower()
-    robot_seen = (mac_plain in logs.lower()) or (mac_colon in logs.lower())
-    dev_tools = re.findall(r"客户端设备支持的工具数量:\s*(\d+)", logs)
-    lines.append(
-        f"[4] 机器人在线(最近{CFG.get('docker_log_lookback_minutes', 120)}min日志): {'PASS' if robot_seen else 'FAIL/离线'} | "
-        f"设备工具数: {dev_tools[-1] if dev_tools else 'N/A'}"
-    )
-    lines.append(f"[5] 网关自身: pid={os.getpid()} pending={pending_count()}")
+        procs = 0
+    hb_age = -1.0
+    last_call = ""
+    if bridge_err.exists():
+        hb_age = round((time.time() - bridge_err.stat().st_mtime) / 60.0, 1)
+        try:
+            tail = bridge_err.read_text(encoding="utf-8", errors="replace").splitlines()[-200:]
+            for line in reversed(tail):
+                if "CallToolRequest" in line:
+                    last_call = line.strip()[:90]
+                    break
+        except Exception:
+            pass
+    bridge_ok = procs >= 1 and 0 <= hb_age <= 3
+    lines.append(f"[1] 云桥接(xiaozhi-mcp): {'PASS' if bridge_ok else 'FAIL'} 进程={procs} 心跳={hb_age if hb_age >= 0 else 'N/A'}min")
+    # 2) 网关 MCP 工具注册(本网关直出)
+    lines.append(f"[2] 网关MCP工具: PASS 工具={len(TOOL_NAMES)}个 ({', '.join(TOOL_NAMES[:6])}{'...' if len(TOOL_NAMES) > 6 else ''})")
+    # 3) 推送链路: 最近一次 push ok(EMQX MQTT µ-law 播报)
+    last_push = ""
+    try:
+        log_lines = Path(CFG.get("log_file", ROOT / "gateway.log")).read_text(
+            encoding="utf-8", errors="replace").splitlines()[-500:]
+        for line in reversed(log_lines):
+            if "push ok" in line:
+                last_push = line.strip()[:90]
+                break
+    except Exception:
+        pass
+    lines.append(f"[3] 推送链路(EMQX MQTT): {'PASS' if last_push else 'FAIL/暂无'} 最近={last_push or '无'}")
+    # 4) 机器人最近活动(经云桥接调用网关工具)
+    lines.append(f"[4] 机器人最近活动(云桥接): {last_call or '暂无工具调用'}")
+    # 5) 自建服务器
+    lines.append("[5] 自建服务器(xiaozhi-esp32-server): 已停用(云链路架构不依赖; 播报走 EMQX MQTT 直连)")
+    lines.append(f"[6] 网关自身: pid={os.getpid()} pending={pending_count()}")
     return "\n".join(lines)
 
 
@@ -416,8 +737,10 @@ def claude_query(instruction: str, timeout_s: int = 120) -> str:
 
 
 @mcp.tool()
-def robot_say(text: str) -> str:
-    """给机器人排队一条待播报消息(Codex/Claude 侧调用)。push_interval_s=0 时立即推送, 否则网关每 N 秒轮询推送; 机器人离线时保留队列, 唤醒后由 robot_pending 朗读。"""
+async def robot_say(text: str) -> str:
+    """给机器人排队一条待播报消息(Codex/Claude 侧调用)。进入单 Worker 推送队列串行播报;
+    完整原文保留在 pending.jsonl 与日志, 语音只播 150 字摘要。机器人离线时保留队列,
+    唤醒后由 robot_pending 朗读。"""
     text = str(text or "").strip()
     if not text:
         return "消息为空。"
@@ -427,14 +750,8 @@ def robot_say(text: str) -> str:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     n = pending_count()
-    if int(CFG.get("push_interval_s", 5) or 0) == 0:
-        ok, err = push_send(text)
-        if ok:
-            pending_remove_ids({entry["id"]})
-            return f"已立即推送给机器人播报。(队列剩余 {max(n - 1, 0)} 条)"
-        return f"已入队(当前 {n} 条)。立即推送失败: {err}"
-    log(f"robot_say enqueued: {text[:120]}")
-    return f"已入队(当前 {n} 条)。网关将每 {CFG.get('push_interval_s', 5)} 秒推送, 机器人离线则保留待唤醒播报。"
+    _enqueue_push(text, "agent", "pending", entry["id"])
+    return f"已进入播报队列，机器人即将播报。(队列剩余 {max(n - 1, 0)} 条)"
 
 @mcp.tool()
 def robot_pending(clear: bool = False) -> str:
@@ -450,7 +767,7 @@ def robot_pending(clear: bool = False) -> str:
 def agent_status(agent: str = "all") -> str:
     """查询本机各 agent(agy/pi/claude/codex) 状态: CLI 可用性/运行进程/待确认问题/最近事件。
     机器人端: 用户问「agent 状态 / 电脑上哪些 agent 能用」时调用。agent 可选 all 或具体名字。"""
-    name = (agent or "all").lower()
+    name = agents_core.normalize_agent(agent or "all")
     if name == "all":
         head = f"网关运行中(pid={os.getpid()}, 待播报 {pending_count()} 条)"
         return head + "\n" + agents_core.status_all_text()
@@ -460,12 +777,13 @@ def agent_status(agent: str = "all") -> str:
 
 
 @mcp.tool()
-def agent_query(agent: str, instruction: str, timeout_s: int = 120) -> str:
+def agent_query(agent: str, instruction: str = "", task: str = "", timeout_s: int = 120) -> str:
     """在电脑上运行指定 agent(agy/pi/claude/codex) 执行任务并返回结果。
     机器人端: 用户说「让 agy/pi/claude/codex 查/做…」时调用。长任务结果自动记入待播报事件。"""
-    name = (agent or "").lower()
+    instruction = instruction or task
+    name = agents_core.normalize_agent(agent or "")
     if name not in agents_core.AGENT_CLIS:
-        return f"未知 agent: {name} (可选: {', '.join(agents_core.AGENT_CLIS)})"
+        return f"未知 agent: {agent} (可选: {', '.join(agents_core.AGENT_CLIS)})"
     timeout_s = max(10, min(int(timeout_s), int(CFG.get("max_timeout_s", 600))))
     log(f"agent_query: {name} :: {instruction[:150]}")
     return agents_core.query(name, instruction, timeout_s)
@@ -475,14 +793,19 @@ def agent_query(agent: str, instruction: str, timeout_s: int = 120) -> str:
 def agent_pending(clear: bool = False) -> str:
     """获取待播报的 agent 事件与待确认问题(如「claude 需要确认: 是否允许运行命令」)。
     机器人端: 用户问「有没有 agent 消息/待办/谁找我」或回答待确认问题时调用; 读后可再调 clear=true。"""
-    return agents_core.pending_text(bool(clear))
+    # 合并: pending.jsonl 待推送(agent 完成/出错直接入队) + agent 事件 + 待确认问题
+    parts = pending_read(bool(clear))
+    ev = agents_core.pending_text(bool(clear))
+    if ev:
+        parts.append(ev)
+    return "\n".join(parts)
 
 
 @mcp.tool()
 def agent_confirm(agent: str, answer: str) -> str:
     """把用户的语音回答回写给指定 agent 的待确认问题(确认/拒绝/补充说明)。
     机器人端: 用户对「agent 需要确认」的问题给出回答后调用。"""
-    name = (agent or "").lower()
+    name = agents_core.normalize_agent(agent or "")
     ok, msg = agents_core.confirm_answer(name, answer)
     return msg
 
@@ -500,7 +823,7 @@ def build_http_app():
         return JSONResponse({
             "status": "ok",
             "pid": os.getpid(),
-            "started_at": _now(),
+            "started_at": _PROC_START,
             "pending": pending_count(),
             "tools": TOOL_NAMES,
         })
@@ -511,22 +834,53 @@ def build_http_app():
             data = await request.json()
         except Exception:
             return JSONResponse({"error": "bad json"}, status_code=400)
-        agent = str(data.get("agent", "")).lower()
+        agent = agents_core.normalize_agent(str(data.get("agent", "")))
         etype = str(data.get("event", ""))
         summary = str(data.get("summary", ""))
         reply_file = str(data.get("reply_file", ""))
         session_id = str(data.get("session_id", ""))
+        msg_uid = str(data.get("msg_uid") or "")
         if agent not in agents_core.AGENT_CLIS and agent != "antigravity":
             return JSONResponse({"error": f"unknown agent: {agent}"}, status_code=400)
+        # 规范 2: 幂等防护 —— 同一 msg_uid 已在队列或 5 分钟内处理过, 静默返回 200
+        if msg_uid:
+            dup = False
+            now = time.time()
+            with _enqueue_lock:
+                stale = [k for k, v in _recent_msg_uids.items() if now - v > 300]
+                for k in stale:
+                    del _recent_msg_uids[k]
+                dup = msg_uid in _recent_msg_uids
+                if not dup:
+                    _recent_msg_uids[msg_uid] = now
+            if dup or _pending_has_id(msg_uid):
+                return JSONResponse({"ok": True, "dup": True, "pending": pending_count()})
         if etype == "question":
             c = agents_core.confirm_register(agent, summary, reply_file)
-            pending_append(f"{agent} 需要确认: {summary[:300]}", "agent")
+            # 立即入队主动发声: agent 弹窗求确认时机器人桌头主动提醒, 不再静默等唤醒朗读
+            text = f"{agent} 需要确认: {summary}"
+            entry = {"id": msg_uid or uuid.uuid4().hex[:8], "text": text[:300], "source": "agent", "created_at": _now()}
+            path = Path(CFG["pending_file"])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            _enqueue_push(text, "agent", "pending", entry["id"])
             return JSONResponse({"ok": True, "confirmation_id": c["id"], "pending": pending_count()})
         if etype not in ("done", "progress", "error"):
             return JSONResponse({"error": f"unknown event: {etype}"}, status_code=400)
-        agents_core.events_append(agent, etype, summary, session_id)
-        if etype == "done":
-            pending_append(f"{agent} 任务完成: {summary[:300]}", "agent")
+        if etype in ("done", "error"):
+            # 指标(antigravity): agent 完成/出错必须立即进入 pending 队列并直接入队推流,
+            # 托盘可见、机器人播报; 失败保留队列供唤醒补播。progress 仍只写 events。
+            label = "任务完成" if etype == "done" else "出错"
+            text = f"{agent} {label}: {summary}"
+            entry = {"id": msg_uid or uuid.uuid4().hex[:8], "text": text, "source": "agent", "created_at": _now()}
+            path = Path(CFG["pending_file"])
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            _enqueue_push(text, "agent", "pending", entry["id"])
+        else:
+            agents_core.events_append(agent, etype, summary, session_id)
         return JSONResponse({"ok": True, "pending": pending_count()})
 
     async def confirm_status(request):
@@ -609,6 +963,7 @@ def main() -> None:
     except Exception as e:
         log(f"transport security config error: {e}")
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
+    threading.Thread(target=_push_worker, daemon=True).start()  # 单 Worker 串行推流(指标 1)
     if int(CFG.get("push_interval_s", 5) or 0) > 0:
         threading.Thread(target=_push_loop, daemon=True).start()
 

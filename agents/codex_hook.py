@@ -14,7 +14,9 @@ decision 时保持默认审批流程, 不会被本脚本替用户做决定。
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -29,7 +31,8 @@ GATEWAY_CWD = Path(__file__).resolve().parent.parent / "gateway"
 def _load_token() -> str:
     try:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8")).get("auth_token", "")
-    except Exception:
+    except Exception as e:
+        _log(f"[ERROR] config.json 解析失败(token 为空): {e}")
         return ""
 
 
@@ -42,9 +45,9 @@ def _log(line: str) -> None:
         pass
 
 
-def _post(etype: str, summary: str, session_id: str) -> None:
+def _post(etype: str, summary: str, session_id: str, msg_uid: str = "") -> None:
     body = json.dumps(
-        {"agent": AGENT, "event": etype, "summary": summary, "session_id": session_id},
+        {"agent": AGENT, "event": etype, "summary": summary, "session_id": session_id, "msg_uid": msg_uid},
         ensure_ascii=False,
     ).encode("utf-8")
     req = urllib.request.Request(
@@ -52,9 +55,10 @@ def _post(etype: str, summary: str, session_id: str) -> None:
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {_load_token()}"},
     )
     try:
-        urllib.request.urlopen(req, timeout=5).read()
+        urllib.request.urlopen(req, timeout=2.5).read()
+        _log(f"posted {etype} ok {msg_uid}: {summary[:80]}")
     except Exception:
-        pass
+        _log(f"post {etype} FAILED {msg_uid}: {summary[:80]}")
 
 
 def _clip(text: str, n: int = 300) -> str:
@@ -118,11 +122,40 @@ def _permission_summary(payload: dict) -> str:
     return "需要审批"
 
 
-def _recently_done(session_id: str, window_s: int = 120) -> bool:
-    """Stop 与 SessionEnd 会先后触发; 同一会话 120 秒内只上报一次 done。"""
-    if not session_id:
+def _msg_uid(data: dict) -> str:
+    """按 (session_id, 最后一条 assistant 消息标识) 归一化 msg_uid:
+    Stop 与 SessionEnd 同轮同 uid(合并去重), 不同轮不同 uid(毫秒级连续上报)。
+    """
+    session = str(data.get("session_id") or data.get("listturn_id") or "")
+    key = ""
+    tp = data.get("transcript_path")
+    if tp:
+        try:
+            lines = Path(tp).read_text(encoding="utf-8", errors="replace").splitlines()[-300:]
+            for line in reversed(lines):
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                p = o.get("payload") if isinstance(o, dict) else None
+                if isinstance(p, dict) and p.get("role") == "assistant":
+                    key = str(p.get("id") or json.dumps(p.get("content"), ensure_ascii=False))
+                    break
+        except Exception:
+            pass
+    if not key:
+        key = str(data.get("turn_id") or "")
+    if not key:
+        key = session or "none"
+    h = hashlib.sha256(f"{session}|{key}".encode("utf-8")).hexdigest()[:12]
+    return f"codex_{session[:8]}_{h}"
+
+
+def _recently_done(msg_uid: str) -> bool:
+    """仅按 msg_uid 去重: 同 msg_uid 的 Stop/SessionEnd 合并; 不同 msg_uid 永不跳过。
+    状态表清理 >10min 旧条目(存储卫生), 不设滑动时间窗口。"""
+    if not msg_uid:
         return False
-    import time
     now = time.time()
     seen: dict = {}
     try:
@@ -130,14 +163,16 @@ def _recently_done(session_id: str, window_s: int = 120) -> bool:
             seen = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
         seen = {}
-    last = seen.get(session_id, 0)
-    seen[session_id] = now
+    seen = {k: v for k, v in seen.items() if now - float(v) < 600}
+    if msg_uid in seen:
+        return True
+    seen[msg_uid] = now
     try:
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(seen), encoding="utf-8")
     except Exception:
         pass
-    return (now - float(last)) < window_s
+    return False
 
 
 def _is_gateway_spawn(cwd: str) -> bool:
@@ -148,6 +183,18 @@ def _is_gateway_spawn(cwd: str) -> bool:
     try:
         return str(Path(cwd).resolve()).casefold() == str(GATEWAY_CWD.resolve()).casefold()
     except Exception:
+        return False
+
+
+def _direct_done_enabled() -> bool:
+    """是否播报「直接 codex 桌面/CLI 任务」的完成。
+    默认关闭: 聊天/调试回复也会被当成任务完成推给机器人, 污染唤醒队列。
+    机器人发起的 agent_query 任务由 agents_core 自行上报, 不受此开关影响。"""
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return bool(cfg.get("push_direct_done", False))
+    except Exception as e:
+        _log(f"[ERROR] config.json 解析失败(push_direct_done 按 false 处理): {e}")
         return False
 
 
@@ -170,9 +217,13 @@ if __name__ == "__main__":
     elif hook == "Notification":
         _post("progress", _clip(data.get("message") or "进度更新", 200), session_id)
     elif hook in ("Stop", "SessionEnd"):
+        msg_uid = _msg_uid(data)
         if _is_gateway_spawn(str(data.get("cwd", ""))):
-            _log(f"skip done: gateway-spawned {session_id}")
-        elif not _recently_done(session_id):
-            summary = _transcript_summary(data) or "任务已结束"
-            _post("done", summary, session_id)
+            _log(f"skip done: gateway-spawned {msg_uid}")
+        elif not _recently_done(msg_uid):
+            if not _direct_done_enabled():
+                _log(f"skip done: direct-turn broadcast disabled (push_direct_done=false) {msg_uid}")
+            else:
+                summary = _transcript_summary(data) or "任务已结束"
+                _post("done", summary, session_id, msg_uid)
     sys.exit(0)

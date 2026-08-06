@@ -34,7 +34,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 | mcp-endpoint-server (Docker) | 8004 | ✅ Up healthy |
 | xiaozhi web / redis / db | 8002/6379/3306 | ✅ Up |
 | funnel_proxy.py (备用路由) | 8090 | ✅ 运行中 |
-| Tailscale Funnel | 443 | ✅ https://dahuilucaaaaa.tail61f3fa.ts.net |
+| Tailscale Funnel | 443 | ✅ https://YOUR_FUNNEL_DOMAIN.ts.net |
 | 系统托盘 fusion_tray.ps1 | — | ✅ 单实例（有保护） |
 
 ## 三、机器人固件（重要）

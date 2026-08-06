@@ -1,5 +1,10 @@
 # StackChan 融合ソリューション
 
+> **v08.06（2026-08-06）:** 読み上げパイプラインを刷新 — EMQX MQTT 上の µ-law 配信、
+> msg_uid 冪等 + ファームウェア ACK クローズドループ、単一 Worker FIFO プッシュ、
+> エージェント別名 + Fail-Fast プローブ、VS Code 連携、対話型 Claude の権限通知。
+> 最新状態は `README.md`（中文）が正。
+
 **StackChan デスクトップロボット**（M5Stack CoreS3）から音声で、この PC 上の
 **codex / claude / agy / pi** の 4 つの AI エージェントを操作：
 状態確認・タスク実行・結果の読み上げ・音声での確認応答。

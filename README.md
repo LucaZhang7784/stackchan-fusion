@@ -1,16 +1,17 @@
 # StackChan 融合方案
 
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
-**codex / claude / agy / pi** 四类 AI agent：查询状态、派发任务、播报结果、语音确认。
+**codex / claude / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
-> 核心思路（2026-08-03）：**云链路 + 唤醒播报**。机器人走 xiaozhi.me 云端智能体，
-> 每次唤醒自动检查待播报消息并逐条念出；机器人派发的任务在 **agent 自己的可见窗口**
-> 执行，结果经 hooks 回流到机器人。自建 xiaozhi-esp32-server 链路保留为备用。
+> 核心思路（2026-08-06 收尾）：**云链路 + MQTT 主动播报**。机器人走 xiaozhi.me 云端智能体，
+> agent 事件经网关 FIFO 队列 → EdgeTTS(粤语) → µ-law → EMQX MQTT 直推固件播报，
+> **msg_uid 全链路幂等 + 固件 ACK 点杀**（播报不重不漏）；任务在 agent 自己的可见窗口执行，
+> 结果经 hooks 回流。自建 xiaozhi-esp32-server 链路已停用。
 
 ## 架构
 
 ```
-机器人 (M5Stack CoreS3, 固件 v1.0.6-ttsbuf, 唤醒词「阿松」)
+机器人 (M5Stack CoreS3, 固件 v1.2-mqttpush, 唤醒词「阿松」)
    │ 语音 (ASR/LLM/TTS 在 xiaozhi.me 云端)
    ▼
 xiaozhi.me 云智能体 (STACK, 提示词见 prompt-阿松-v3.md)
@@ -21,10 +22,13 @@ xiaozhi-mcp 云桥接 (mcp_pipe.py + server.py, 本机)
    ▼
 融合网关 fusion_gateway.py (:8010, Bearer 认证)
    │
-   ├── codex   (hooks: 任务开始/完成/需审批 → 机器人)
-   ├── claude  (hooks + confirm_mcp 确认回环)
-   ├── agy     (Antigravity fusion hooks, CLI 归属 agent=agy)
-   └── pi      (扩展 hooks-bridge.ts)
+   ├── 播报链路: 单 Worker FIFO → EdgeTTS(粤语) → µ-law → EMQX MQTT
+   │            (stackchan/{mac}/push, START 带 msg_uid, 固件 ACK 后点杀)
+   ├── codex   (Stop hook 带 msg_uid → 网关幂等入队)
+   ├── claude  (Stop/SessionEnd/PermissionRequest hook + confirm_mcp 确认回环)
+   ├── agy     (Antigravity fusion hooks)
+   ├── pi      (扩展 hooks-bridge.ts)
+   └── vscode  (vscode_hook.py, VS Code 任务完成上报)
         └── 机器人任务 → agent 自己的可见窗口执行 (Codex-Asong / ClaudeCode-Asong / ...)
 ```
 
@@ -32,14 +36,15 @@ xiaozhi-mcp 云桥接 (mcp_pipe.py + server.py, 本机)
 
 | 链路 | 说明 |
 |---|---|
-| 云链路（主） | 机器人语音走 xiaozhi.me；agent 事件经网关排队，唤醒后播报 |
-| 自建链路（备用） | 本机 docker xiaozhi-esp32-server + Tailscale Funnel；支持 `robot_say` 真推送 |
+| 云链路（主） | 机器人语音走 xiaozhi.me；agent 事件经网关 → EMQX MQTT µ-law 主动播报 |
+| 自建链路 | **已停用**（容器 Exited；播报不再依赖 xiaozhi-esp32-server） |
 
 ## 功能
 
 | 能力 | 说明 |
 |---|---|
-| 唤醒播报 | 每次唤醒第一动作查 `agent_pending`，有消息逐条念、念完清除 |
+| 主动播报 | agent 完成/出错/需确认 → 网关立即推送（150 字口语摘要），msg_uid + ACK 点杀不重不漏 |
+| 唤醒补播 | 机器人离线时消息保留 pending 队列，唤醒后 `agent_pending` 补播 |
 | 状态查询 | 「检查 XX 状态」→ `agent_status`（4 个 agent 可用性/进程/最近事件，<5s） |
 | 任务执行 | 「让 XX 做…」→ `agent_query`，在 agent 自己的可见窗口执行，结果回流播报 |
 | 确认回环 | claude 权限请求 → 机器人念问题 → 语音回答 → 回写 allow/deny（claude 完整支持） |
@@ -81,33 +86,39 @@ python scripts\verify_connectivity.py
 | claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`；可见窗口经 `agents/claude_visible_run.py` 上报完成；`agents/confirm_mcp.py` | ✅ | ✅ 完整回环 |
 | agy / Antigravity | `~/.gemini/config/hooks.json` `fusion` 段 → `agents/antigravity_hook.py` | ✅ CLI 归属 agent=agy | ❌ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → 网关 | ✅ | ❌ |
+| vscode | `agents/vscode_hook.py`，任务/终端结束上报 done；`AGENT_CLIS` 已注册 | ✅ | ❌ |
 
 任务执行方式：`agent_query` 打开 agent 自己的可见控制台窗口（标题 `Codex-Asong` /
 `ClaudeCode-Asong` / `Antigravity-Asong` / `pi-Asong`，脚本存于 `gateway/state/visible_runs/`），
 结果经各 agent hooks 写入网关，机器人唤醒后播报。
 
+> 所有 hook 上报均携带 **msg_uid**（`{agent}_{session8}_{hash(最后一条 assistant 消息)}`），
+> 网关按 msg_uid 幂等（重复上报静默 200），固件对 START 回发 ACK，网关收到 ACK 后物理删除
+> pending 记录——同一轮任务绝不重复播报，离线消息保留兜底自动重试。
+
 ## 机器人固件
 
-- 当前：**v1.0.6-ttsbuf**（`firmware/post-fw-v1.0.6-ttsbuf/`）
+- 当前：**v1.2-mqttpush**（`firmware/post-fw-v1.2-mqttpush/`，构建脚本 `build_fw_v112.ps1`）
 - 基座：07.31 已跑通的 `reference/stackchan-xiaozhi-firmware`（heavenchenggong 系，
   含「阿松」+ LED 补丁；**不要用 HtSz 主分支**——有 bug 起不来）
-- v1.0.6：TTS 播放缓冲加大（解码队列 2.4s→4.8s、播放余量 2→4、入队背压不丢包）——针对长播报吞字
-- v1.0.5：麦克风增益 42→36（降低削波失真）
-- v1.0.4：**设备端 AEC 已回退**（v1.0.3 的 AEC 在 CoreS3 上导致 audio_input 死循环、机器人无反应）
-- 保留优化：唤醒加速（检测窗口 3000→1500ms、阈值下限 0.35→0.30）；
-  后台预热 WebSocket 连接（掉线 2s 秒连，唤醒免重新握手）
-- 升级：app-only 刷 `xiaozhi.bin @ 0x410000`，保留配置（`firmware/post-fw-v1.0.6-ttsbuf/flash_post_fw.ps1`）
-- 构建：espressif/idf:v5.5.2（5.5.4 会黑屏），流程见 `firmware/build_fw_v106.ps1` + `build_led_ci.sh`
+- 第二条 MQTT 链路（`stackchan/{mac}/push`）：订阅 EMQX 推送主题，µ-law 直出播放（绕开
+  Opus 解码器兼容问题），START 解析 msg_uid → 回发 ACK；SSID 智能路由（EMQX 首选，
+  AP 隔离时自动降级）；MQTT buffer 8KB、poll 读超时 5s、**keepalive 15s**；
+  lwIP TCP 收窗口 16KB（µ-law 16KB/s 有余量）；播报期间关 WiFi 节能，播完恢复；
+  打断后待播放队列排空自然切回待机。
+- v1.0.6/1.0.5/1.0.4 历史版本见下方版本记录。
+- 升级：app-only 刷 `xiaozhi.bin @ 0x410000`，保留配置；构建 espressif/idf:v5.5.2
+  （5.5.4 会黑屏）。
 
 ## 服务与运维
 
 | 服务 | 端口 | 说明 |
 |---|---|---|
-| 融合网关 | 8010 | 11 个 MCP 工具，Bearer 认证 |
+| 融合网关 | 8010 | 11 个 MCP 工具，Bearer 认证；单 Worker 推送 FIFO + msg_uid 幂等 |
 | xiaozhi-mcp 云桥接 | — | mcp_pipe.py + server.py，心跳 60s |
-| xiaozhi-esp32-server (Docker) | 8000/8003 | 备用链路 |
-| mcp-endpoint-server (Docker) | 8004 | 备用链路 MCP 端点 |
-| funnel_proxy.py | 8090 | 备用路由（开机自启 + 5 分钟自愈） |
+| EMQX 公共 broker | 1883 | 播报推送（broker-cn.emqx.io，QoS0 + 固件 ACK 确认） |
+| Codex↔机器人桥接 | — | `bridge/stackchan_mcp.js`（MCP stdio：check_task / respond） |
+| xiaozhi-esp32-server (Docker) | — | **已停用**（云链路不依赖） |
 | 系统托盘 | — | 状态监视 + 网关守护（单实例保护）+ 队列操作菜单（查看/清空） |
 
 守护与计划任务全部经 `wscript.exe` + VBS 隐藏启动（无弹窗），`install_autostart.ps1` 一键注册。
@@ -121,12 +132,15 @@ python scripts\verify_connectivity.py
 | 中文任务乱码 | hook 脚本读 UTF-8；`mcp_pipe` 子进程 `PYTHONUTF8=1`（已修复，重启 codex 桌面生效） |
 | 机器人念陈旧结果 | `agent_result_check` 只返回 30 分钟内新结果（已修复） |
 | 托盘两个图标 | `fusion_tray.ps1` 单实例保护（已修复） |
-| 机器人不播报 | 确认已唤醒 + 云智能体 prompt 是 v3（`prompt-阿松-v3.md`） |
+| 机器人不播报 | 网关日志看 `push ack`/`push no-ack`：ack=已送达；no-ack=机器人 push MQTT 离线，
+  消息保留 pending 兜底自动重试；config.json 损坏会 Fail-Fast 拒启 |
+| 播报卡顿/无声 | 确认固件 v1.2-mqttpush（µ-law + 16KB 窗口）；网关日志 `push ok` 后无 ack
+  说明机器人 push MQTT 掉线（keepalive 15s 已加固） |
 
 ## 已知边界
 
-- 云链路**无打断式推送**：agent 事件排队，机器人唤醒后经 `agent_pending` 播报；
-  自建链路才支持 `robot_say` 真推送。
+- 云链路播报为**非打断式主动推送**（EMQX MQTT），消息带 msg_uid + ACK 闭环；
+  机器人离线时消息保留 pending，唤醒后 `agent_pending` 补播。
 - Codex / Antigravity 桌面应用与 VS Code 插件面板的**内部会话无法外部注入**；
   机器人任务在对应 CLI 窗口执行，插件会话仍经 hooks 上报事件。
 - 确认回环仅 claude 完整（`--permission-prompt-tool` + `confirm_mcp`）；
@@ -134,6 +148,22 @@ python scripts\verify_connectivity.py
 - 语音端到端延迟约 1.5–2.5s（云端 ASR/LLM/TTS 所致），非打断式播报可接受。
 
 ## 版本记录
+
+### v08.06（2026-08-06 收尾）
+
+- **播报链路根治**：网关 Opus 编码与 ESP 解码器不兼容 → 改传 **µ-law**（16KB/s）；
+  lwIP TCP 收窗口 5760B→16KB、MQTT buffer 8KB、poll 读超时 5s、播报期关 WiFi 节能，
+  解决"无声/1秒杂音/卡顿"（EMQX RTT ~0.5s 下吞吐有余量）。
+- **主动播报闭环**：单 Worker FIFO 串行推流；done/error/question 立即入队主动发声；
+  全链路 **msg_uid 幂等**（Hook 生成 uid → 网关去重 → START 带 uid → 固件 ACK →
+  网关 ACK-and-Delete 物理删除）；离线消息保留兜底 + 30s 退避自动重试。
+- **Agent 耦合补齐**：别名归一化（可头大→codex 等）+ Fail-Fast 存活预检；VS Code 注册
+  （AGENT_CLIS + vscode_hook.py）；Claude 交互式 PermissionRequest 钩子（权限弹窗主动播报）；
+  Antigravity/Claude/Codex hooks 全部改 msg_uid 去重（废除 120s 窗口）。
+- **配置防呆**：config.json 非法即 Fail-Fast 拒启（不再静默回退）；5 个 hook 脚本配置
+  解析失败显式 ERROR；claude/antigravity hook 命令改正斜杠（bash 兼容）。
+- **托盘/工具**：托盘按云链路口径重写（待推送/事件/确认、最近推送、自建服务器停用）；
+  `robot_status` 重写为云链路自检；Codex↔机器人桥接恢复（`bridge/stackchan_mcp.js`）。
 
 ### v08.06（2026-08-04）
 

@@ -9,7 +9,7 @@
   "allow_claude": true,
   "codex_cli": "codex",
   "claude_cli": "claude",
-  "exec_cwd": "D:\\ProcessCenter\\StackChan\\fusion.firmware.0731\\gateway",
+  "exec_cwd": "<PROJECT_DIR>\\gateway",
   "max_output_chars": 4000,
   "max_timeout_s": 600,
   "http_host": "0.0.0.0",

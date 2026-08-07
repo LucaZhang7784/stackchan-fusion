@@ -89,9 +89,10 @@ robot announces the result after wake-up.
 | Agent | Integration | Active reporting | Voice write-back |
 |---|---|---|---|
 | codex | `~/.codex/hooks.json` → `agents/codex_hook.py`; `config.toml` `bypass_hook_trust=true`, `[windows] sandbox='unelevated'` | ✅ desktop + CLI | ❌ (confirm in the codex UI) |
-| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`; visible-window runs report completion via `agents/claude_visible_run.py`; `agents/confirm_mcp.py` | ✅ | ✅ full loop |
+| claude | `~/.claude/settings.local.json` hooks → `agents/claude_hook.py` (local file is not overwritten by ccswitch model switching); visible-window runs report completion via `agents/claude_visible_run.py`; `agents/confirm_mcp.py` | ✅ | ✅ full loop |
 | agy / Antigravity | `~/.gemini/config/hooks.json` `fusion` block → `agents/antigravity_hook.py` | ✅ CLI as agent=agy | ❌ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → gateway | ✅ | ❌ |
+| vscode | `agents/vscode_hook.py` reports done on task/terminal end; voice dispatch is **refused** (prevents `code -r <task>` opening the text as a file) | ✅ | ❌ |
 
 Tasks run in the agent's own visible console window (titles `Codex-Asong` /
 `ClaudeCode-Asong` / `Antigravity-Asong` / `pi-Asong`; scripts in
@@ -123,7 +124,7 @@ agent's hooks and announced by the robot after wake-up.
 
 | Service | Port | Notes |
 |---|---|---|
-| Fusion gateway | 8010 | 11 MCP tools, Bearer auth |
+| Fusion gateway | 8010 | 12 MCP tools (incl. `robot_snap` camera), Bearer auth |
 | xiaozhi-mcp cloud bridge | — | mcp_pipe.py + server.py, 60s heartbeat |
 | xiaozhi-esp32-server (Docker) | 8000/8003 | backup link |
 | mcp-endpoint-server (Docker) | 8004 | backup-link MCP endpoint |
@@ -159,6 +160,28 @@ launchers (no flashing windows); `install_autostart.ps1` registers them.
   non-interruptive announcements.
 
 ## Version History
+
+### v08.07 (2026-08-07)
+
+- **Phase 8.1 motion engine**: firmware `done/error` → servo Nod, `question` → head
+  tilt +15° (TiltAsk); idle wandering head-move interval 4s → **20s**
+  (`kIdleScanIntervalUs`, verified on device).
+- **Phase 8.2 CoreS3 vision MCP**: gateway `robot_snap` (12 tools); firmware takes a
+  JPEG photo, streams chunks over MQTT (`stackchan/{mac}/photo`, QoS1), gateway
+  reassembles and validates JPEG magic + total length; 3/3 real-device shots OK.
+- **Claude hooks survive model switching**: `install_claude_hooks.ps1` now writes
+  `~/.claude/settings.local.json` (higher priority, not clobbered by ccswitch);
+  four hooks injected + self-heal hint.
+- **VS Code voice dispatch refused**: `agents_core.query()` returns
+  "VS Code 暂不支持语音派发任务" for agent `vscode`/`code` — no more accidental
+  `code -r <task>` file-opens; manual tasks still report via `vscode_hook.py`.
+- **Claude stream-interruption fallback**: empty summary now reports
+  "Claude 会话结束(响应可能中断, 详见电脑)" instead of silently dropping.
+- **codex hooks cleanup**: removed 15 PromLight zombie entries from
+  `~/.codex/hooks.json` (backup `hooks.json.bak-20260807-110621`); only the 5
+  codex_hook events remain.
+- **Sanitization**: public copies no longer contain the Tailscale IP
+  `<TAILSCALE_IP>` or real local paths.
 
 ### v08.06 (2026-08-04)
 

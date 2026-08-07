@@ -1,18 +1,18 @@
 # StackChan 融合项目记忆（权威版）
 
-> 更新: 2026-08-04 23:15 (+08:00) · 会话开始时先读本文件再动手。
+> 更新: 2026-08-07 (+08:00) · 会话开始时先读本文件再动手。
 
 ## 一、当前架构（云链路 + 唤醒播报）
 
 ```
-机器人(M5Stack CoreS3, 固件 v1.0.6-ttsbuf)
+机器人(M5Stack CoreS3, 固件 v1.2-mqttpush)
   │ 语音走 xiaozhi.me 云端 STACK 智能体(ASR/LLM/TTS 全在云端)
   ▼
 xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py, 本机)
                               │ agent_status / agent_query / agent_pending /
-                              │ agent_confirm / agent_result_check / docker_status ...
+                              │ agent_confirm / agent_result_check / robot_snap / docker_status ...
                               ▼
-                        融合网关 fusion_gateway.py (:8010, 11 工具)
+                        融合网关 fusion_gateway.py (:8010, 12 工具)
                               │
         ┌─────────────────────┼──────────────────────┐
    codex(CLI/桌面, hooks)  claude(hooks+确认回环)  agy/Antigravity(fusion hooks)  pi(扩展)
@@ -20,7 +20,9 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 ```
 
 - **主链路**: 云链路; 自建 docker xiaozhi-esp32-server + Tailscale Funnel 只作备用。
-- **主动播报方式**: 唤醒优先规则——每次唤醒后 LLM 先调 `agent_pending`, 逐条念, 念完 `clear=true`（非打断式; 自建链路才有 robot_say 真推送）。
+- **主动播报方式**: EMQX MQTT µ-law 直推（`stackchan/{mac}/push`）+ msg_uid 幂等 +
+  固件 ACK 点杀（v08.06 起）; 离线消息保留 pending, 唤醒后 `agent_pending` 补播;
+  唤醒优先规则仍保留（每次唤醒先念待播报）。
 - **唤醒词「阿松」**（拼音 a song, 固件硬编码 + 你好小智兜底; 阈值下限 0.30, 检测窗口 1500ms）。
 - **后台预热连接**: 待机时维持一条 WebSocket 连接（曾连上后掉线 2s 内秒连; 首次失败 5s→40s 退避）, 唤醒时跳过重新握手。
 
@@ -28,7 +30,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 | 服务 | 端口 | 状态 |
 |---|---|---|
-| 融合网关 fusion_gateway.py | 8010 | ✅ /healthz ok, 11 工具 |
+| 融合网关 fusion_gateway.py | 8010 | ✅ /healthz ok, 12 工具（含 robot_snap） |
 | xiaozhi-mcp 云桥接 (mcp_pipe + server.py) | — | ✅ 心跳 60s 正常; 开机自启任务 StackChan-CloudBridge(wscript 隐藏) |
 | xiaozhi-esp32-server (Docker, 备用) | 8000/8003 | ✅ Up healthy |
 | mcp-endpoint-server (Docker) | 8004 | ✅ Up healthy |
@@ -39,10 +41,14 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 ## 三、机器人固件（重要）
 
-- **当前固件**: `fusion.firmware.0731/firmware/post-fw-v1.0.6-ttsbuf`（已刷入）
+- **当前固件**: `firmware/post-fw-v1.2-mqttpush`（已刷入, v08.06 起）
   - 基座: **07.31 已跑通的** `reference/stackchan-xiaozhi-firmware`（heavenchenggong 系, 含「阿松」+ LED 补丁, 不要用 HtSz 主分支——有 bug 起不来）
-  - **v1.0.6 改动（当前, 2026-08-04）**: TTS 播放缓冲——解码队列 2.4s→4.8s、
-    播放余量 2→4 帧、入队改**背压不丢包**（`PushPacketToDecodeQueue(wait=true)`）——针对长播报吞字。
+  - **v1.2-mqttpush 能力**: 第二条 MQTT 推送链路（µ-law 直出播放、msg_uid 解析 +
+    ACK 回执、keepalive 15s、MQTT buffer 8KB、poll 超时 5s、lwIP 收窗口 16KB、
+    播报期关 WiFi 节能、SSID 智能路由）; **Phase 8.1** done→Nod / question→TiltAsk(+15°),
+    待机摆头 20s; **Phase 8.2** 拍照 JPEG 分块 MQTT（`stackchan/{mac}/photo` QoS1）。
+  - v1.0.6（历史）: TTS 播放缓冲——解码队列 2.4s→4.8s、播放余量 2→4 帧、
+    入队改**背压不丢包**——针对长播报吞字。
   - v1.0.5: 麦克风增益 42→36（42 可能削波导致"播报队列消息"→"播放对你秋田"式失真）。
   - v1.0.4: **设备端 AEC 回退**——v1.0.3 开的 AEC 在 CoreS3 上会让 `audio_input` 任务
     在 dios_ssp AEC DSP（`complex_abs2`）里死循环 → task_wdt 触发、机器人无反应/重启;
@@ -61,8 +67,8 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 | Agent | 方式 | 状态 |
 |---|---|---|
-| codex | `~/.codex/hooks.json`(11 事件→codex_hook.py) + `config.toml` `bypass_hook_trust=true` + `[windows] sandbox='unelevated'`（elevated 会间歇 Access denied）+ 不用 `--sandbox workspace-write` | ✅ 桌面+CLI 都上报 |
-| claude | `~/.claude/settings.json` hooks→claude_hook.py + confirm_mcp.py（确认回环完整: 语音回答可回写 allow/deny） | ✅ |
+| codex | `~/.codex/hooks.json`(5 事件→codex_hook.py, v08.07 清掉 PromLight 僵尸钩子) + `config.toml` `bypass_hook_trust=true` + `[windows] sandbox='unelevated'` | ✅ 桌面+CLI 都上报 |
+| claude | `~/.claude/settings.local.json` hooks→claude_hook.py（v08.07 起 local 优先, ccswitch 切模型不覆盖）+ confirm_mcp.py（确认回环完整） | ✅ |
 | agy/Antigravity | `~/.gemini/config/hooks.json` fusion 段; CLI 按 artifactDirectoryPath 含 antigravity-cli 归属 agent=agy | ✅ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → 网关 8010; 工具走 xiaozhi 8003 /api/push | ✅ |
 
@@ -72,7 +78,8 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 ## 五、智能体 Prompt（阿松 v3）
 
-- 文件: `fusion.firmware.0731/prompt-阿松-v3.md`（需贴入 xiaozhi.me 控制台; v2 保留存档）
+- 文件: `prompt-阿松-v3.md`（v3.5: LLM=DeepSeekLLM(deepseek-v4-flash), TTS=EdgeTTS
+  zh-HK-HiuGaaiNeural 粤语女声; 需贴入 xiaozhi.me 控制台; v2 保留存档）
 - 核心规则:
   - **回复语言跟随 xiaozhi.me 智能体/音色预设**（预设粤语就用粤语，预设普通话就用普通话，不强制）
   - 唤醒优先（每次唤醒先 agent_pending, 逐条播报, clear=true）
@@ -80,7 +87,8 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
     「状态/在干嘛/进程」→ agent_status; 「结果/完了吗」→ agent_result_check;
     「可以/拒绝」→ agent_confirm; 「docker/容器」→ docker_status
   - 禁止把「播报消息/查状态」理解成点歌/搜索; 听不清回「再说一遍」
-  - 语音朗读要求（无 markdown/emoji）; LED 固件自动跟随
+  - 语音朗读要求（无 markdown/emoji）; **超过 50 字先摘要再播报**; 拍照铁律
+    （说「看看/拍照」必须立即调 `self.camera.take_photo`）; LED 固件自动跟随
 
 ## 六、2026-08-03 已修复的问题（防止复发）
 
@@ -106,7 +114,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 13. **长播报时断时续/吞字（2026-08-04, 处理中→Pending）**: v1.0.6 已加大解码缓冲
     （2.4s→4.8s）+ 播放余量（2→4）+ 入队背压不丢包; 用户反馈仍时断时续。
     待排查方向: 多段 TTS 段边界 `ResetDecoder()` 清缓冲 / 服务器突发推送欠载 / WS 断流。
-9. **claude/pi 可见窗口工作目录**: 从用户主目录改为项目目录 `D:\ProcessCenter\StackChan`
+9. **claude/pi 可见窗口工作目录**: 从用户主目录改为项目目录 `<PROJECT_ROOT>`
    （与 codex/agy 一致, 「总结当前项目」才有上下文）。
 10. **托盘队列操作菜单**: 新增「队列操作」子菜单——显示队列消息内容 / 清空队列
     （自动备份, UTF-8 无 BOM）/ 清空待确认问题。
@@ -129,6 +137,12 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 - [x] 2026-08-04: 固件 v1.0.6-ttsbuf 刷入（AEC 已回退; 增益 36; TTS 缓冲加大; 唤醒加速+预热连接保留）
 - [x] 2026-08-04: xiaozhi.me STACK 智能体模型 `deepseek-v4-flash-ha` 出现
       `503 No available channel` → 控制台已换 `qwen3.6`
+- [x] 2026-08-06: 播报链路根治（µ-law + lwIP 窗口 16KB + msg_uid/ACK 幂等闭环）;
+      固件 v1.2-mqttpush 刷入; 托盘按云链路口径重写。
+- [x] 2026-08-07: Phase 8.1 动作联动（done→Nod/question→TiltAsk, 待机摆头 20s）;
+      Phase 8.2 `robot_snap` 拍照 MCP（连拍 3/3）; Claude hooks 迁移
+      `settings.local.json`（五工单: 抗 ccswitch 覆盖 / VS Code 拒发 / 空摘要兜底 /
+      codex hooks 清 PromLight 僵尸）; 本地存档 `version.08.07/` + GitHub 同步。
 - [ ] **Pending · 长播报时断时续/吞字**: 用户反馈长语音播报仍时断时续（v1.0.6 缓冲加大
       后未根治）。排查线索: ①多段 TTS 时 `kDeviceStateSpeaking` 每次进入都调
       `ResetDecoder()` 清解码/播放队列; ②服务器突发推送导致欠载; ③WS 断流。
@@ -147,22 +161,22 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 ```powershell
 # 网关
-powershell -ExecutionPolicy Bypass -File D:\ProcessCenter\StackChan\fusion.firmware.0731\gateway\run_gateway.ps1
+powershell -ExecutionPolicy Bypass -File <PROJECT_DIR>\gateway\run_gateway.ps1
 # 云桥接
-powershell -ExecutionPolicy Bypass -File D:\ProcessCenter\StackChan\fusion.firmware.0731\xiaozhi-mcp\run_bridge.ps1
+powershell -ExecutionPolicy Bypass -File <PROJECT_DIR>\xiaozhi-mcp\run_bridge.ps1
 # 连通性验证（云链路口径）
-python D:\ProcessCenter\StackChan\fusion.firmware.0731\scripts\verify_connectivity.py
+python <PROJECT_DIR>\scripts\verify_connectivity.py
 # 打包
-python D:\ProcessCenter\StackChan\fusion.firmware.0731\package_stackchan.py
+python <PROJECT_DIR>\package_stackchan.py
 # 刷机（app-only）
 python -m esptool --chip esp32s3 -b 460800 --port COM8 --before default-reset --after hard-reset write-flash 0x410000 xiaozhi.bin
 ```
 
 ## 九、关键文件路径
 
-- 网关: `fusion.firmware.0731/gateway/`（fusion_gateway.py, agents_core.py, fusion_tray.ps1）
-- 桥接: `fusion.firmware.0731/xiaozhi-mcp/`（server.py, mcp_pipe.py）
-- 固件: `fusion.firmware.0731/firmware/post-fw-v1.0.6-ttsbuf/`
-- 提示词: `fusion.firmware.0731/prompt-阿松-v3.md`
-- 发布副本: `D:\ProcessCenter\StackChan\stackchan-fusion-github`
-- 07.31 备份包: `fusion.firmware.0731/package-stackchan.zip.0731-backup`
+- 网关: `<PROJECT_DIR>/gateway/`（fusion_gateway.py, agents_core.py, fusion_tray.ps1）
+- 桥接: `<PROJECT_DIR>/xiaozhi-mcp/`（server.py, mcp_pipe.py）
+- 固件: `<PROJECT_DIR>/firmware/post-fw-v1.2-mqttpush/`; 源码 `reference/stackchan-xiaozhi-firmware-mqtt`
+- 提示词: `<PROJECT_DIR>/prompt-阿松-v3.md`
+- 发布副本: `<GITHUB_REPO_DIR>`（stackchan-fusion-github）
+- 07.31 备份包: `<PROJECT_DIR>/package-stackchan.zip.0731-backup`

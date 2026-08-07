@@ -55,8 +55,49 @@ def _post_done(summary: str) -> None:
         _log(f"post failed: {e} :: {summary[:120]}")
 
 
+def install_tasks(dir_path: str) -> str:
+    """一键写入 .vscode/tasks.json: 追加一条"上报任务完成"任务(末尾调用本钩子),
+    保证 VS Code Task/终端结束时 100% 上报 etype=done 驱动机器人播报。"""
+    vscode = Path(dir_path) / ".vscode"
+    vscode.mkdir(parents=True, exist_ok=True)
+    tasks_path = vscode / "tasks.json"
+    data = {}
+    if tasks_path.exists():
+        try:
+            data = json.loads(tasks_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    data.setdefault("version", "2.0.0")
+    inputs = data.setdefault("inputs", [])
+    if not any(i.get("id") == "stackchan_summary" for i in inputs):
+        inputs.append({
+            "id": "stackchan_summary", "type": "promptString",
+            "description": "任务完成摘要(机器人将播报)"
+        })
+    tasks = data.setdefault("tasks", [])
+    if not any("stackchan" in str(t.get("label", "")).lower() for t in tasks):
+        tasks.append({
+            "label": "StackChan: 上报任务完成",
+            "type": "shell",
+            "command": "python",
+            "args": [str(Path(__file__).resolve()), "--summary", "${input:stackchan_summary}"],
+            "problemMatcher": [],
+        })
+    tasks_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(tasks_path)
+
+
 def main() -> int:
     args = sys.argv[1:]
+    if "--install-tasks" in args:
+        d = "."
+        for i, a in enumerate(args):
+            if a == "--dir" and i + 1 < len(args):
+                d = args[i + 1]
+        p = install_tasks(d)
+        print(f"已写入 {p}。用法: 在 VS Code 里运行 Tasks: Run Task -> 'StackChan: 上报任务完成',")
+        print("或在任意终端/task 末尾追加: python vscode_hook.py \"任务完成摘要\"")
+        return 0
     summary = ""
     if "--stdin" in args:
         raw = sys.stdin.buffer.read().decode("utf-8", "replace") if hasattr(sys.stdin, "buffer") else ""

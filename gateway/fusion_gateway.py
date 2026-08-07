@@ -82,6 +82,7 @@ TOOL_NAMES = [
     "agent_status", "robot_status", "docker_status", "ws_probe",
     "codex_query", "claude_query", "robot_say", "robot_pending",
     "agent_query", "agent_pending", "agent_confirm",
+    "robot_snap",
 ]
 
 STARTED_AT = time.time()
@@ -234,7 +235,7 @@ def _tts_text(text: str, limit: int = 180) -> str:
     return t
 
 
-_FFMPEG = r"D:\ProcessCenter\StackChan\tools\ffmpeg-9.0-essentials_build\bin\ffmpeg.exe"
+_FFMPEG = os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg") or "ffmpeg"
 _push_client: paho.Client | None = None
 
 # ---- 加固 2: ACK 送达闭环(固件收到 START 回发 stackchan/{mac}/ack) ----
@@ -243,10 +244,16 @@ _RETRY_BACKOFF_S = 30
 _acked_texts: dict = {}
 _acked_lock = threading.Lock()
 _recent_msg_uids: dict = {}  # 幂等记忆: msg_uid -> ts(5 分钟内重复上报静默丢弃)
+_photo_lock = threading.Lock()
+_photo_state: dict = {}  # robot_snap 单次快照重组状态
 
 
 def _ack_topic() -> str:
     return f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/ack"
+
+
+def _photo_topic() -> str:
+    return f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/photo"
 
 
 def _on_ack(client, userdata, msg) -> None:
@@ -259,10 +266,47 @@ def _on_ack(client, userdata, msg) -> None:
         pass
 
 
+def _on_photo(client, userdata, msg) -> None:
+    """固件快照回传: [0x01][w:2][h:2] 头 / [0x02][seq:2][data...] 块 / [0x03] 结束。"""
+    payload = msg.payload
+    if not payload:
+        return
+    with _photo_lock:
+        st = _photo_state
+        t = payload[0]
+        if t == 1 and len(payload) >= 5:
+            st["w"] = (payload[1] << 8) | payload[2]
+            st["h"] = (payload[3] << 8) | payload[4]
+            st["chunks"] = {}
+            st["done"] = False
+        elif t == 2 and len(payload) >= 3:
+            seq = (payload[1] << 8) | payload[2]
+            st.setdefault("chunks", {})[seq] = payload[3:]
+        elif t == 3:
+            st["done"] = True
+            if len(payload) >= 5:
+                st["total"] = (payload[1] << 24) | (payload[2] << 16) | (payload[3] << 8) | payload[4]
+            ev = st.get("event")
+            if ev:
+                ev.set()
+
+
+def _on_push_message(client, userdata, msg) -> None:
+    try:
+        topic = msg.topic or ""
+        if topic.endswith("/ack"):
+            _on_ack(client, userdata, msg)
+        elif topic.endswith("/photo"):
+            _on_photo(client, userdata, msg)
+    except Exception:
+        pass
+
+
 def _on_push_connect(client, userdata, flags, rc, properties=None) -> None:
     # paho 重连(clean session)后订阅会丢, 每次连接成功都重订 ACK 主题
     try:
         client.subscribe(_ack_topic(), 0)
+        client.subscribe(_photo_topic(), 1)  # QoS1: 照片分块不许丢
     except Exception:
         pass
 
@@ -313,11 +357,12 @@ def _push_mqtt() -> paho.Client:
         except Exception:
             pass
         _push_client = paho.Client(client_id="fusion-gateway", protocol=paho.MQTTv311)
-        _push_client.on_message = _on_ack
+        _push_client.on_message = _on_push_message
         _push_client.on_connect = _on_push_connect
         _push_client.connect(str(CFG.get("push_mqtt_host", "127.0.0.1")), int(CFG.get("push_mqtt_port", 1883)), 10)
         _push_client.loop_start()
         _push_client.subscribe(_ack_topic(), 0)
+        _push_client.subscribe(_photo_topic(), 1)
     return _push_client
 
 # ---- 指标 1: 线程安全 Push FIFO + 单 Worker(严禁多 Agent 消息并发交错倾倒) ----
@@ -326,7 +371,7 @@ _push_enqueued: set[str] = set()
 _enqueue_lock = threading.Lock()
 
 
-def _enqueue_push(text: str, source: str = "gateway", kind: str = "pending", record_id: str = "") -> None:
+def _enqueue_push(text: str, source: str = "gateway", kind: str = "pending", record_id: str = "", action: str = "") -> None:
     """统一入队(线程安全)。所有主动推送(robot_say / agent_event / _drain_pending)
     必须走这里; 同一 record_id 只允许入队一次, 防轮询并发重复推流。"""
     with _enqueue_lock:
@@ -334,7 +379,7 @@ def _enqueue_push(text: str, source: str = "gateway", kind: str = "pending", rec
             return
         if record_id:
             _push_enqueued.add(record_id)
-    _push_queue.put({"text": str(text or ""), "source": source, "kind": kind, "id": record_id})
+    _push_queue.put({"text": str(text or ""), "source": source, "kind": kind, "id": record_id, "action": action})
 
 
 def _pending_update(entry_id: str, pushed: bool | None = None, attempted_at: float | None = None) -> None:
@@ -400,11 +445,12 @@ def _push_worker() -> None:
             text = item.get("text", "")
             record_id = item.get("id", "")
             kind = item.get("kind", "pending")
+            action = str(item.get("action") or "")
             msg_uid = str(record_id or "")
             if not text.strip():
                 _finish_push_record(kind, record_id, True)
                 continue
-            ok, err, dur, sent_text = push_send(text, msg_uid)
+            ok, err, dur, sent_text = push_send(text, msg_uid, action)
             if ok:
                 if _wait_ack(msg_uid or sent_text):
                     log(f"push ack [{item.get('source')}]: {text[:150]}")
@@ -476,10 +522,11 @@ def _tts_ulaw_frames(text: str) -> list[bytes]:
             for i in range(0, len(ulaw) - len(ulaw) % _PUSH_FRAME_BYTES, _PUSH_FRAME_BYTES)]
 
 
-def push_send(text: str, msg_uid: str = "") -> tuple[bool, str, float, str]:
+def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str, float, str]:
     """MQTT 主动推送: EdgeTTS 合成 -> 16k µ-law 60ms 帧 -> stackchan/{mac}/push。
     指标 3: 语音推流收紧为 150 字口语摘要(≤15s); 完整原文由调用方保留在
-    pending.jsonl 与日志。START 报头带 msg_uid(\x01+msg_uid+\x00+text), 供固件 ACK 回执。
+    pending.jsonl 与日志。START 报头: \x01+msg_uid+\x00+action+\x00+text
+    (Phase 8.1: action=done/question 驱动固件点头/偏头), 供固件 ACK 回执。
     返回 (ok, err, 音频时长秒, 实际发送文本)。"""
     try:
         text = _tts_text(text, limit=150)
@@ -489,7 +536,9 @@ def push_send(text: str, msg_uid: str = "") -> tuple[bool, str, float, str]:
         # (否则 3s 断流看门狗会误判为断流, 把帧全部丢弃 = 播报被掐掉)
         frames = _tts_ulaw_frames(text)
         # QoS0 + 8帧/条批量: 每批 7682B; 固件 MQTT buffer 8KB + poll 读超时 5s 防断连
-        if msg_uid:
+        if msg_uid and action:
+            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + action.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=0)
+        elif msg_uid:
             client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=0)
         else:
             client.publish(topic, b"\x01" + text.encode("utf-8"), qos=0)
@@ -520,7 +569,7 @@ def _drain_pending() -> tuple[int, int]:
         text = str(o.get("text", "")).strip()
         if not text:
             continue
-        _enqueue_push(text, "pending", "pending", o.get("id", ""))
+        _enqueue_push(text, "pending", "pending", o.get("id", ""), str(o.get("action") or ""))
         enqueued += 1
     return enqueued, 0
 
@@ -762,6 +811,47 @@ def robot_pending(clear: bool = False) -> str:
     return "\n".join(items)
 
 
+@mcp.tool()
+def robot_snap(timeout_s: int = 15) -> str:
+    """Phase 8.2: 让机器人用板载摄像头拍一张照片(拍桌面/屏幕), 保存到本机并返回图片路径。
+    Antigravity / Claude Code / Codex 可直接打开返回的图片文件查看物理实体/屏幕。"""
+    try:
+        timeout_s = max(5, min(int(timeout_s), 60))
+        topic = f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/push"
+        client = _push_mqtt()
+        ev = threading.Event()
+        with _photo_lock:
+            _photo_state.clear()
+            _photo_state["event"] = ev
+            _photo_state["chunks"] = {}
+            _photo_state["done"] = False
+        client.publish(topic, b"\x04", qos=0)
+        if not ev.wait(timeout=timeout_s):
+            with _photo_lock:
+                _photo_state.pop("event", None)
+            return "拍照超时(机器人未回传照片), 请确认机器人在线且摄像头正常"
+        with _photo_lock:
+            chunks = _photo_state.get("chunks", {})
+            w = _photo_state.get("w", 0)
+            h = _photo_state.get("h", 0)
+            total = _photo_state.get("total", 0)
+            _photo_state.pop("event", None)
+        if not chunks:
+            return "拍照失败(未收到图像数据)"
+        data = b"".join(chunks[i] for i in sorted(chunks))
+        if total and len(data) != total:
+            return f"拍照不完整(收到 {len(data)}/{total} 字节), 请重试"
+        if not data.startswith(b"\xff\xd8\xff"):
+            return f"拍照数据异常(非 JPEG), 请重试"
+        snap_dir = Path(CFG["pending_file"]).parent / "snap"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        path = snap_dir / f"snap_{time.strftime('%Y%m%d-%H%M%S')}.jpg"
+        path.write_bytes(data)
+        return f"照片已保存: {path} ({w}x{h}, {len(data)} bytes)"
+    except Exception as e:
+        return f"robot_snap 失败: {e}"
+
+
 # ---------------------------------------------------------------- 多 agent 工具
 @mcp.tool()
 def agent_status(agent: str = "all") -> str:
@@ -859,12 +949,13 @@ def build_http_app():
             c = agents_core.confirm_register(agent, summary, reply_file)
             # 立即入队主动发声: agent 弹窗求确认时机器人桌头主动提醒, 不再静默等唤醒朗读
             text = f"{agent} 需要确认: {summary}"
-            entry = {"id": msg_uid or uuid.uuid4().hex[:8], "text": text[:300], "source": "agent", "created_at": _now()}
+            entry = {"id": msg_uid or uuid.uuid4().hex[:8], "text": text[:300], "source": "agent",
+                     "action": "question", "created_at": _now()}
             path = Path(CFG["pending_file"])
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            _enqueue_push(text, "agent", "pending", entry["id"])
+            _enqueue_push(text, "agent", "pending", entry["id"], "question")
             return JSONResponse({"ok": True, "confirmation_id": c["id"], "pending": pending_count()})
         if etype not in ("done", "progress", "error"):
             return JSONResponse({"error": f"unknown event: {etype}"}, status_code=400)
@@ -873,12 +964,13 @@ def build_http_app():
             # 托盘可见、机器人播报; 失败保留队列供唤醒补播。progress 仍只写 events。
             label = "任务完成" if etype == "done" else "出错"
             text = f"{agent} {label}: {summary}"
-            entry = {"id": msg_uid or uuid.uuid4().hex[:8], "text": text, "source": "agent", "created_at": _now()}
+            entry = {"id": msg_uid or uuid.uuid4().hex[:8], "text": text, "source": "agent",
+                     "action": "done", "created_at": _now()}
             path = Path(CFG["pending_file"])
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            _enqueue_push(text, "agent", "pending", entry["id"])
+            _enqueue_push(text, "agent", "pending", entry["id"], "done")
         else:
             agents_core.events_append(agent, etype, summary, session_id)
         return JSONResponse({"ok": True, "pending": pending_count()})
@@ -958,7 +1050,8 @@ def main() -> None:
         from mcp.server.transport_security import TransportSecuritySettings
         mcp.settings.transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "100.69.221.25:*"],
+    # 如需 Tailscale 远程访问, 在此追加 "100.x.y.z:*"
+    allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*"],
         )
     except Exception as e:
         log(f"transport security config error: {e}")

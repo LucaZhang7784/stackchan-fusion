@@ -88,9 +88,10 @@ python scripts\verify_connectivity.py
 | エージェント | 連携方法 | 能動的報告 | 音声での回答書き戻し |
 |---|---|---|---|
 | codex | `~/.codex/hooks.json` → `agents/codex_hook.py`；`config.toml` `bypass_hook_trust=true`、`[windows] sandbox='unelevated'` | ✅ デスクトップ+CLI | ❌（codex UI で確認） |
-| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`；可視ウィンドウは `agents/claude_visible_run.py` 経由で完了を報告；`agents/confirm_mcp.py` | ✅ | ✅ 完全ループ |
+| claude | `~/.claude/settings.local.json` hooks → `agents/claude_hook.py`（local ファイルは ccswitch のモデル切替で上書きされない）；可視ウィンドウは `agents/claude_visible_run.py` 経由で完了を報告；`agents/confirm_mcp.py` | ✅ | ✅ 完全ループ |
 | agy / Antigravity | `~/.gemini/config/hooks.json` `fusion` ブロック → `agents/antigravity_hook.py` | ✅ CLI は agent=agy | ❌ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → ゲートウェイ | ✅ | ❌ |
+| vscode | `agents/vscode_hook.py` がタスク/ターミナル終了時に done を報告；音声派遣は**拒否**（`code -r <task>` でテキストをファイルとして開く事故を防止） | ✅ | ❌ |
 
 タスクはエージェント専用の可視コンソールウィンドウ（タイトル `Codex-Asong` /
 `ClaudeCode-Asong` / `Antigravity-Asong` / `pi-Asong`、スクリプトは
@@ -121,7 +122,7 @@ python scripts\verify_connectivity.py
 
 | サービス | ポート | 説明 |
 |---|---|---|
-| 融合ゲートウェイ | 8010 | 11 個の MCP ツール、Bearer 認証 |
+| 融合ゲートウェイ | 8010 | 12 個の MCP ツール（`robot_snap` カメラ含む）、Bearer 認証 |
 | xiaozhi-mcp クラウドブリッジ | — | mcp_pipe.py + server.py、60 秒ハートビート |
 | xiaozhi-esp32-server (Docker) | 8000/8003 | 予備リンク |
 | mcp-endpoint-server (Docker) | 8004 | 予備リンクの MCP エンドポイント |
@@ -155,6 +156,26 @@ python scripts\verify_connectivity.py
   非割り込みアナウンスとしては許容範囲。
 
 ## バージョン履歴
+
+### v08.07（2026-08-07）
+
+- **Phase 8.1 モーション連動**：ファームウェアが `done/error` → サーボ Nod、
+  `question` → 頭を +15° 傾ける（TiltAsk）；待機中の首振りを 4s → **20s** に
+  （`kIdleScanIntervalUs` に統一、実機確認済み）。
+- **Phase 8.2 CoreS3 ビジョン MCP**：ゲートウェイに `robot_snap` 追加（12 ツール）；
+  ファームウェアが JPEG 撮影 → MQTT チャンク送信（`stackchan/{mac}/photo`, QoS1）→
+  ゲートウェイが JPEG マジック + 総長を検証して再構成；実機 3/3 成功。
+- **Claude hooks の上書き対策**：`install_claude_hooks.ps1` は
+  `~/.claude/settings.local.json` に書き込む（優先度が高く ccswitch で消えない）；
+  4 フック注入 + 自己修復ヒント。
+- **VS Code 音声派遣を拒否**：`agents_core.query()` が `vscode`/`code` に対し
+  音声派遣を拒否し、`code -r <task>` による誤ファイル展開を防止；
+  手動タスクは `vscode_hook.py` 経由で自動報告。
+- **Claude ストリーム中断フォールバック**：要約が空の場合も
+  "Claude 会話終了（応答が中断した可能性、詳細はPCで）" を報告し、イベントを落とさない。
+- **codex hooks の整理**：`~/.codex/hooks.json` から PromLight ゾンビ 15 件を削除
+  （バックアップ `hooks.json.bak-20260807-110621`）；codex_hook の 5 イベントのみ残す。
+- **脱敏**：公開コピーから Tailscale IP `<TAILSCALE_IP>` と実ローカルパスを削除。
 
 ### v08.06（2026-08-04）
 

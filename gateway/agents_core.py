@@ -265,7 +265,7 @@ def normalize_agent(name: str) -> str:
 
 
 CREATE_NEW_CONSOLE = 0x00000010 if os.name == "nt" else 0
-PROJECT_ROOT = ROOT.parent.parent  # D:\ProcessCenter\StackChan
+PROJECT_ROOT = ROOT.parent.parent  # 项目根目录(仓库克隆位置)
 VISIBLE_DIR = ROOT / "state" / "visible_runs"
 
 # 机器人驱动的任务: 在 agent 自己的可见窗口里执行(用户能看到过程与输出)。
@@ -382,6 +382,9 @@ def query(agent: str, task: str, timeout_s: int = 120, visible: bool = True) -> 
     visible=False: 无头执行并直接返回结果(脚本/自检用)。
     """
     agent = normalize_agent(agent)
+    # 工单 3: VS Code 不支持语音派发任务(code -r <task> 会把任务文本当文件打开)
+    if agent == "vscode":
+        return "VS Code 暂不支持语音派发任务。请在 VS Code 里手动运行任务，任务结束会经 vscode_hook 自动播报。"
     # Fail-Fast 存活预检: agent 未安装/CLI 不可用时立即返回, 严禁死等 timeout_s
     ok, info = probe(agent)
     if not ok:

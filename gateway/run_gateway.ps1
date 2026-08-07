@@ -4,7 +4,7 @@ New-Item -ItemType Directory -Force -Path $state | Out-Null
 $port = 8010
 $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
 if ($listener) { Write-Host "网关已在运行 (PID $($listener[0].OwningProcess))"; exit 0 }
-$py = "C:\Users\zhang.luca\AppData\Local\Programs\Python\Python311\python.exe"
+$py = Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"
 if (-not (Test-Path $py)) { $py = (Get-Command python).Source }
 if (-not $py) { Write-Host '未找到 python'; exit 1 }
 $p = Start-Process -FilePath $py -ArgumentList @('fusion_gateway.py','--transport','http','--host','0.0.0.0','--port',"$port") -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $state 'gateway.stdout.log') -RedirectStandardError (Join-Path $state 'gateway.stderr.log') -PassThru

@@ -3,6 +3,9 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.08（2026-08-07 午后）：LED 灯环根治（PY32 GPIO13 出厂序列 + led_manual_ 待机锁 +
+> I2C 互斥；真机播报绿→待机暖橙）+ Antigravity 播报修复（hooks 命名空间 `stackchan` +
+> AfterAgent/agent.stop 事件别名）+ Prompt v3.6（灯色归固件）+ 固件 v1.2-mqttpush 重建。
 > v08.07（2026-08-07）：Phase 8 动作联动（done→点头 / question→歪头）+ CoreS3 视觉
 > `robot_snap` 拍照 MCP（12 工具）+ Claude hooks 迁移 `settings.local.json` 抗覆盖 +
 > VS Code 语音派发拒发 + Claude 流式中断兜底。
@@ -88,7 +91,7 @@ python scripts\verify_connectivity.py
 |---|---|---|---|
 | codex | `~/.codex/hooks.json` → `agents/codex_hook.py`；`config.toml` `bypass_hook_trust=true`、`[windows] sandbox='unelevated'` | ✅ 桌面+CLI | ❌（在 codex 界面确认） |
 | claude | `~/.claude/settings.local.json` hooks → `agents/claude_hook.py`（local 优先、ccswitch 切模型不覆盖）；可见窗口经 `agents/claude_visible_run.py` 上报完成；`agents/confirm_mcp.py` | ✅ | ✅ 完整回环 |
-| agy / Antigravity | `~/.gemini/config/hooks.json` `fusion` 段 → `agents/antigravity_hook.py` | ✅ CLI 归属 agent=agy | ❌ |
+| agy / Antigravity | `~/.gemini/config/hooks.json` `stackchan` 段 → `agents/antigravity_hook.py` | ✅ CLI 归属 agent=agy | ❌ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → 网关 | ✅ | ❌ |
 | vscode | `agents/vscode_hook.py`，任务/终端结束上报 done；`AGENT_CLIS` 已注册；语音派发**已拒发**（防 `code -r` 误开文件） | ✅ | ❌ |
 
@@ -112,6 +115,8 @@ python scripts\verify_connectivity.py
   打断后待播放队列排空自然切回待机。
 - **Phase 8.1 动作联动**：收到 `done/error` → 点头；`question` → 歪头 +15°；
   待机闲逛摆头 20s 一次。
+- **v08.08 LED 根治**：PY32 GPIO13 出厂序列 + `led_manual_` 待机锁 + I2C 互斥，
+  真机播报绿→待机暖橙；固件已重建（14:31 产物）。
 - **Phase 8.2 拍照**：`robot_snap` → 固件拍 JPEG 分块（`stackchan/{mac}/photo`, QoS1）
   → 网关重组校验。
 - v1.0.6/1.0.5/1.0.4 历史版本见下方版本记录。
@@ -162,6 +167,17 @@ python scripts\verify_connectivity.py
 - VS Code 语音派发不支持（已拒发防退化）；拍照依赖机器人联网且 push MQTT 在线。
 
 ## 版本记录
+
+### v08.08（2026-08-07 午后）
+
+- **Antigravity 播报根治**：`~/.gemini/config/hooks.json` 命名空间 `"fusion"`→`"stackchan"`
+  （IDE 只识别 stackchan/promlight）；`antigravity_hook.py` 事件别名补
+  AfterAgent/agent.stop/SessionEnd/agent.session.end；13:29 真机 push ack。
+- **LED 灯环根治**：PY32 GPIO13 未初始化是"写成功但灯不变"的根因，补齐输出+上拉+推挽
+  出厂序列；`Py32WriteRegBlock` 失败重试、`refreshLeds` 读-改-写、`led_manual_` 待机锁、
+  I2C 互斥 + 触屏故障冷却；固件重建（app-only @0x410000），真机播报绿→待机暖橙 ✅。
+- **Prompt v3.6**：LED 灯色归固件，严禁 LLM 调灯表达情绪；用户要求时同轮 `self.led.auto` 恢复。
+- 归档 version.08.08 + GitHub 脱敏同步。
 
 ### v08.07（2026-08-07）
 
@@ -264,3 +280,4 @@ python scripts\verify_connectivity.py
 （`YOUR_*` / `AA:BB:CC:DD:EE:FF`）。真实值只存在于本机 `.env`、`config.json`、
 docker 配置。`.gitignore` 已忽略所有运行时敏感文件。
 部署时按 [DEPLOY.md](DEPLOY.md) 第 4 节逐项替换。
+

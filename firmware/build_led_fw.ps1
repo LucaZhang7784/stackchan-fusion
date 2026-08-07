@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Continue"
-$fwroot = "<PROJECT_DIR>"
+$fwroot = "<PROJECT_ROOT>\fusion.firmware.0731"
 $project = "$fwroot\reference\stackchan-xiaozhi-firmware"
 $tmp = "$fwroot\firmware\build-led-tmp"
 $out = "$fwroot\firmware\post-fw-v1.0.0-led"

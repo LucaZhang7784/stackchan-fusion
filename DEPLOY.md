@@ -18,7 +18,8 @@
 
 ### 1.1 刷固件
 
-固件在 `firmware/post-fw-v1.0.2-micfix/`（M5Stack CoreS3，分区 app @ 0x410000，16MB）。
+固件在 `firmware/post-fw-v1.2-mqttpush/`（M5Stack CoreS3，分区 app @ 0x410000，16MB；
+含 µ-law MQTT 主动播报、msg_uid/ACK 闭环、Phase 8 动作/拍照、v08.08 LED 灯环根治）。
 
 ```powershell
 # 全量（首次 / 换固件必须）：会擦除，需重新配网
@@ -101,8 +102,8 @@ powershell -ExecutionPolicy Bypass -File gateway/install_autostart.ps1
 | Agent | 配置 |
 |---|---|
 | codex | `~/.codex/hooks.json` 各事件指向 `agents/codex_hook.py`；`~/.codex/config.toml` 加 `bypass_hook_trust=true`、`[windows] sandbox='unelevated'` |
-| claude | `~/.claude/settings.json` hooks 指向 `agents/claude_hook.py`（跑 `agents/install_claude_hooks.ps1`）；确认回环需启动 `agents/confirm_mcp.py` |
-| agy / Antigravity | `~/.gemini/config/hooks.json` 的 `fusion` 段指向 `agents/antigravity_hook.py` |
+| claude | `~/.claude/settings.local.json` hooks 指向 `agents/claude_hook.py`（跑 `agents/install_claude_hooks.ps1`；local 优先级高，ccswitch 切模型不覆盖）；确认回环需启动 `agents/confirm_mcp.py` |
+| agy / Antigravity | `~/.gemini/config/hooks.json` 的 `stackchan` 段指向 `agents/antigravity_hook.py`（命名空间必须是 `stackchan`/`promlight`，IDE 才识别；改完需重启 Antigravity 桌面版） |
 | pi | `~/.pi/agent/settings.json` 注册 `extensions/hooks-bridge.ts`（把文件放进 `~/.pi/agent/extensions/`） |
 
 > 所有 hook 脚本里的路径如 `<PROJECT_ROOT>\...` 需改成你机器上的实际路径。
@@ -131,3 +132,4 @@ python scripts/verify_connectivity.py
 | Tailscale 个人域名 | 一律用 `YOUR_FUNNEL_DOMAIN.ts.net` 占位 |
 
 `.gitignore` 已忽略 `.env`、`config.json`、日志、状态、outbox、打包产物。
+

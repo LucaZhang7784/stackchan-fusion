@@ -43,10 +43,19 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 
 - **当前固件**: `firmware/post-fw-v1.2-mqttpush`（已刷入, v08.06 起）
   - 基座: **07.31 已跑通的** `reference/stackchan-xiaozhi-firmware`（heavenchenggong 系, 含「阿松」+ LED 补丁, 不要用 HtSz 主分支——有 bug 起不来）
-  - **v1.2-mqttpush 能力**: 第二条 MQTT 推送链路（µ-law 直出播放、msg_uid 解析 +
+- **v1.2-mqttpush 能力**: 第二条 MQTT 推送链路（µ-law 直出播放、msg_uid 解析 +
     ACK 回执、keepalive 15s、MQTT buffer 8KB、poll 超时 5s、lwIP 收窗口 16KB、
     播报期关 WiFi 节能、SSID 智能路由）; **Phase 8.1** done→Nod / question→TiltAsk(+15°),
     待机摆头 20s; **Phase 8.2** 拍照 JPEG 分块 MQTT（`stackchan/{mac}/photo` QoS1）。
+  - **v08.07 LED 根治补丁（真机确认播报变绿→待机暖橙）**:
+    **真正根因 = PY32 GPIO13 未初始化**——对照 M5Stack 出厂固件
+    (hylarucoder-StackChan hal_io_expander): 灯环 WS2812×12 驱动前必须把 PY32
+    GPIO13 配为 输出+上拉+推挽（REG_GPIO_M_H=0x04 / PU_H=0x0A / PD_H=0x0C /
+    DRV_H=0x14 的 bit5）。此前缺这步, 0x24/0x30 写入被 PY32 接受但灯环不驱动,
+    "写成功但灯不变"。另补: ① `Py32WriteRegBlock` 失败日志 + 一次重试;
+    ② `led_manual_` 仅待机生效/活跃态强制状态色/离开自动复位暖橙/Idle 待机锁;
+    ③ `i2c_bus_mutex_`（FreeRTOS Mutex + 50ms 超时）+ 触屏 I2C 故障冷却 +
+    400ms 防踩踏；④ refreshLeds 改为读-改-写（保留 CFG 其他位）。
   - v1.0.6（历史）: TTS 播放缓冲——解码队列 2.4s→4.8s、播放余量 2→4 帧、
     入队改**背压不丢包**——针对长播报吞字。
   - v1.0.5: 麦克风增益 42→36（42 可能削波导致"播报队列消息"→"播放对你秋田"式失真）。
@@ -69,7 +78,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 |---|---|---|
 | codex | `~/.codex/hooks.json`(5 事件→codex_hook.py, v08.07 清掉 PromLight 僵尸钩子) + `config.toml` `bypass_hook_trust=true` + `[windows] sandbox='unelevated'` | ✅ 桌面+CLI 都上报 |
 | claude | `~/.claude/settings.local.json` hooks→claude_hook.py（v08.07 起 local 优先, ccswitch 切模型不覆盖）+ confirm_mcp.py（确认回环完整） | ✅ |
-| agy/Antigravity | `~/.gemini/config/hooks.json` fusion 段; CLI 按 artifactDirectoryPath 含 antigravity-cli 归属 agent=agy | ✅ |
+| agy/Antigravity | `~/.gemini/config/hooks.json` **stackchan 段**（2026-08-07 修复: 原误改的 "fusion" 命名空间不被 IDE 识别, 已还原为 "stackchan"; 事件名补 AfterAgent/agent.stop/SessionEnd/agent.session.end 别名）; CLI 按 artifactDirectoryPath 含 antigravity-cli 归属 agent=agy | ✅ 已修复+真机 ACK |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → 网关 8010; 工具走 xiaozhi 8003 /api/push | ✅ |
 
 机器人任务执行方式: `agent_query` 在 agent 自己的可见窗口执行
@@ -98,7 +107,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 4. **陈旧 outbox**: `agent_result_check` 只返回 30 分钟内新结果, 过期自动归档; 旧文件已清空。
 5. **托盘双图标**: fusion_tray.ps1 加单实例保护。
 6. **计划任务弹窗**: 全部改 wscript.exe + VBS 隐藏启动（StackChan 3 个任务）。
-7. **mcp-endpoint health key**: config.json 已改为容器实际 key `22e242a3ba4e4eaaa02c924c6fc9ded7`。
+7. **mcp-endpoint health key**: config.json 已改为容器实际 key `YOUR_HEALTH_KEY`。
 8. **claude 可见窗口无完成事件**: `claude -p`(print 模式)不触发 Claude Code hooks →
    `agents/claude_visible_run.py` 包装脚本运行并捕获输出, 完成后同时 POST done 到网关
    + 写 outbox（agent_result_check 与 agent_pending 两条路都通）。
@@ -114,6 +123,24 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 13. **长播报时断时续/吞字（2026-08-04, 处理中→Pending）**: v1.0.6 已加大解码缓冲
     （2.4s→4.8s）+ 播放余量（2→4）+ 入队背压不丢包; 用户反馈仍时断时续。
     待排查方向: 多段 TTS 段边界 `ResetDecoder()` 清缓冲 / 服务器突发推送欠载 / WS 断流。
+14. **Antigravity 桌面重启后仍不播报（2026-08-07 13:29 修复, 防复发）**:
+    - 死穴一: `~/.gemini/config/hooks.json` 顶层命名空间被误改为 `"fusion"`, IDE 只识别
+      规范命名空间 `"stackchan"` / `"promlight"`, 整段 Hook 被静默忽略 → 已还原为 `"stackchan"`。
+    - 死穴二: `agents/antigravity_hook.py` 事件匹配只认 `"Stop"`, 而 IDE 实际上报
+      `"AfterAgent"`/`"agent.stop"` → 已升级为
+      `elif event in ("Stop", "AfterAgent", "agent.stop", "SessionEnd", "agent.session.end")`。
+    - 验收: AfterAgent 模拟报文实测 `posted done ok`; 13:29:16 网关日志
+      `push ack [agent]: agy 任务完成` 真机播报+ACK, pending 清空。
+    - 约束: 以后改 hooks.json 顶层命名空间**严禁改成 "fusion"**, 必须用 "stackchan"。
+15. **LED 灯环常亮橙色、不随状态变化（2026-08-07 根治, 防复发）**:
+    - 真根因: PY32 **GPIO13 未配输出推挽**, 灯环数据线无法驱动——
+      对照出厂固件 hal_io_expander 初始化序列补齐（0x04/0x0A/0x0C/0x14 bit5）。
+    - 加固: `m5stack_core_s3.cc` 补 PY32 写失败日志+重试、refreshLeds 读-改-写、
+      手动色仅待机生效/活跃态强制状态色/离开自动复位暖橙/Idle 待机锁、
+      `i2c_bus_mutex_`(50ms)+触屏故障冷却+400ms 防踩踏。
+    - 真机: 播报变绿、结束回暖橙, 无 I2C 报错。聆听蓝待唤醒验证。
+    - Prompt 保固: 阿松 v3.6 严禁 LLM 调 `self.led.*` 表达情绪，用户明确要求时
+      必须同轮 `self.led.auto` 恢复。LED 颜色永远归固件状态机。
 9. **claude/pi 可见窗口工作目录**: 从用户主目录改为项目目录 `<PROJECT_ROOT>`
    （与 codex/agy 一致, 「总结当前项目」才有上下文）。
 10. **托盘队列操作菜单**: 新增「队列操作」子菜单——显示队列消息内容 / 清空队列

@@ -1,5 +1,11 @@
 # StackChan 融合ソリューション
 
+> **v08.08（2026-08-07）:** LED リング根本修正（PY32 GPIO13 初期化 + 待機ロック + I2C ミューテックス；
+> 再生=緑 → 待機=暖オレンジを実機確認）、Antigravity 読み上げ修正（hooks 名前空間 `stackchan` +
+> AfterAgent/agent.stop エイリアス）、Prompt v3.6（LED はファームウェア管理）、
+> ファームウェア v1.2-mqttpush 再ビルド。
+> **v08.07（2026-08-07）:** Phase 8 モーション（done→うなずき / question→傾き）+ `robot_snap`
+> カメラ MCP（12 ツール）+ Claude hooks を `settings.local.json` へ移行 + VS Code 音声派発を拒否。
 > **v08.06（2026-08-06）:** 読み上げパイプラインを刷新 — EMQX MQTT 上の µ-law 配信、
 > msg_uid 冪等 + ファームウェア ACK クローズドループ、単一 Worker FIFO プッシュ、
 > エージェント別名 + Fail-Fast プローブ、VS Code 連携、対話型 Claude の権限通知。
@@ -157,6 +163,19 @@ python scripts\verify_connectivity.py
 
 ## バージョン履歴
 
+### v08.08（2026-08-07 午後）
+
+- **Antigravity 読み上げ修正**: `~/.gemini/config/hooks.json` の名前空間 `"fusion"`→`"stackchan"`
+  （IDE は stackchan/promlight のみ認識）；`antigravity_hook.py` のイベント別名に
+  AfterAgent/agent.stop/SessionEnd/agent.session.end を追加；13:29 実機 push ack 確認。
+- **LED リング根本修正**: PY32 GPIO13 が未初期化（出力+プッシュプル）だったため
+  レジスタ書き込みは成功してもリングが点灯しない根因を解消；工場出荷時の初期化シーケンス、
+  書込リトライ、read-modify-write、`led_manual_` 待機専用ロック、I2C ミューテックス +
+  タッチ冷却を追加；ファームウェア再ビルド（app-only @0x410000）。再生=緑 → 待機=暖オレンジ ✅。
+- **Prompt v3.6**: LED 色はファームウェアが管理。LLM は感情表現に `self.led.*` を呼ばない；
+  ユーザーが色変更を要求したら同じターンで `self.led.auto` に復帰。
+- アーカイブ `version.08.08/` + GitHub 脱敏同期（MAC/ドメイン/キー/ユーザーパス → プレースホルダー）。
+
 ### v08.07（2026-08-07）
 
 - **Phase 8.1 モーション連動**：ファームウェアが `done/error` → サーボ Nod、
@@ -257,3 +276,4 @@ MAC / ドメインはすべてプレースホルダー（`YOUR_*` / `AA:BB:CC:DD
 実際の値はローカルの `.env`、`config.json`、docker 設定のみに存在します。
 `.gitignore` は実行時に生成される機密ファイルをすべて除外します。
 デプロイ時は [DEPLOY.md](DEPLOY.md) の第 4 節に従い各項目を置き換えてください。
+

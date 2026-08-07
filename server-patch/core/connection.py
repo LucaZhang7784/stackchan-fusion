@@ -268,6 +268,12 @@ class ConnectionHandler:
             self.logger.bind(tag=TAG).error(f"Connection error: {str(e)}-{stack_trace}")
             return
         finally:
+            import sys as _sys
+            _exc = _sys.exc_info()
+            self.logger.bind(tag=TAG).info(
+                f"receive loop end: exc={_exc[0].__name__ if _exc[0] else 'none'}, "
+                f"stop_event={self.stop_event.is_set()}, ws_closed={getattr(ws, 'closed', '?')}"
+            )
             try:
                 await self._save_and_close(ws)
             except Exception as final_error:
@@ -371,6 +377,16 @@ class ConnectionHandler:
             await handleTextMessage(self, message)
         elif isinstance(message, bytes):
             if self.vad is None or self.asr is None:
+                return
+
+            # 实时语音链路: 音频直达实时会话, 绕过 VAD/ASR/LLM/TTS 三段式
+            if getattr(self.llm, "is_realtime", False):
+                pcm_frame = self._decode_opus_packet(message)
+                if pcm_frame:
+                    try:
+                        await self.llm.send_audio(pcm_frame)
+                    except Exception as e:
+                        self.logger.bind(tag=TAG).debug(f"实时音频转发失败: {e}")
                 return
 
             # 处理来自MQTT网关的音频包
@@ -613,6 +629,7 @@ class ConnectionHandler:
             asyncio.run_coroutine_threadsafe(
                 self.tts.open_audio_channels(self), self.loop
             )
+
             if self.need_bind:
                 self.bind_completed_event.set()
                 return
@@ -654,6 +671,10 @@ class ConnectionHandler:
             self._init_prompt_enhancement()
             """注入工具调用few-shot示例（仅function_call模式）"""
             self._inject_tool_call_fewshot()
+
+            # 实时语音: 所有组件就绪后启动实时会话 (prompt/工具已就绪)
+            if getattr(self.llm, "is_realtime", False) and hasattr(self.llm, "start"):
+                asyncio.run_coroutine_threadsafe(self.llm.start(self), self.loop)
 
         except Exception as e:
             self.logger.bind(tag=TAG).error(f"实例化组件失败: {e}")
@@ -1527,8 +1548,16 @@ class ConnectionHandler:
     async def close(self, ws=None):
         """资源清理方法"""
         try:
+            self.logger.bind(tag=TAG).info("close() entered: 连接会话结束")
             from core import fusion_push
             fusion_push.unregister(self)
+
+            # 实时语音: 关闭实时会话
+            if getattr(self.llm, "is_realtime", False) and hasattr(self.llm, "stop"):
+                try:
+                    await self.llm.stop()
+                except Exception as e:
+                    self.logger.bind(tag=TAG).debug(f"实时链路关闭失败: {e}")
 
             # 清理 VAD 连接资源
             if (
@@ -1648,6 +1677,14 @@ class ConnectionHandler:
 
     def clear_queues(self):
         """清空所有任务队列"""
+        # 实时语音: 打断/清空时取消当前响应与输入缓冲
+        if getattr(self.llm, "is_realtime", False) and hasattr(self.llm, "cancel"):
+            try:
+                # 只调度不阻塞: clear_queues 常在事件循环线程被调用,
+                # .result() 会卡死循环导致 cancel 永远不执行 (client_abort 卡 True)
+                asyncio.run_coroutine_threadsafe(self.llm.cancel(), self.loop)
+            except Exception as e:
+                self.logger.bind(tag=TAG).debug(f"实时链路取消失败: {e}")
         if self.tts:
             self.logger.bind(tag=TAG).debug(
                 f"开始清理: TTS队列大小={self.tts.tts_text_queue.qsize()}, 音频队列大小={self.tts.tts_audio_queue.qsize()}"

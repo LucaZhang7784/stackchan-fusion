@@ -235,7 +235,7 @@ def _tts_text(text: str, limit: int = 180) -> str:
     return t
 
 
-_FFMPEG = os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg") or "ffmpeg"
+_FFMPEG = r"<PROJECT_ROOT>\tools\ffmpeg-9.0-essentials_build\bin\ffmpeg.exe"
 _push_client: paho.Client | None = None
 
 # ---- 加固 2: ACK 送达闭环(固件收到 START 回发 stackchan/{mac}/ack) ----
@@ -1050,8 +1050,7 @@ def main() -> None:
         from mcp.server.transport_security import TransportSecuritySettings
         mcp.settings.transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-    # 如需 Tailscale 远程访问, 在此追加 "100.x.y.z:*"
-    allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*"],
+            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "YOUR_TAILSCALE_IP:*"],
         )
     except Exception as e:
         log(f"transport security config error: {e}")

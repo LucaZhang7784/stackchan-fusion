@@ -1,4 +1,4 @@
-﻿# StackChan × Claude Code 耦合审计与修复工单
+# StackChan × Claude Code 耦合审计与修复工单
 
 - **审计身份**：代码审计员（只读，未修改任何项目代码）
 - **审计日期**：2026-08-07
@@ -90,7 +90,7 @@ Claude Code (CLI / VS Code 插件)
 | docker MCP profile | `stackchan`（已注册，codex config.toml 启用） | `promlight`（**已移除**，`docker mcp profile ls` 仅剩 stackchan） |
 | MCP server 文件 | `bridge/stackchan_mcp.js`（在线，工具 `stackchan_check_task` / `stackchan_respond`） | `.opencode/mcp-servers/promlight/`（**已删除**） |
 | 计划任务 | fusion_gateway / tray 自启动 | `PromLight-MCPWatchdog`（**已移除**） |
-| codex hooks | `codex_hook.py` 接 5 事件 | `agent_hook.py`（`<OTHER_PROJECT_DIR>/PromLight/`）**仍接 11 事件** |
+| codex hooks | `codex_hook.py` 接 5 事件 | `agent_hook.py`（`D:/Promlight_rev/PromLight/`）**仍接 11 事件** |
 | 上报端点 | `fusion_gateway:8010` | promlight 自有系统 |
 
 ### 3.2 结论：**可以共存，无硬冲突**——但有 3 个潜伏风险
@@ -131,7 +131,7 @@ $ErrorActionPreference = "Stop"
 # 关键改动: hooks 写入 settings.local.json, 避免被 ccswitch 全量覆盖 settings.json 时抹掉
 $settingsPath = Join-Path $env:USERPROFILE ".claude\settings.local.json"
 
-$python = "<USER_HOME>\AppData\Local\Programs\Python\Python311\python.exe"
+$python = "C:\Users\<USER>\AppData\Local\Programs\Python\Python311\python.exe"
 if (-not (Test-Path $python)) {
     $python = (Get-Command python -ErrorAction SilentlyContinue).Source
     if (-not $python) { throw "找不到 Python" }
@@ -351,7 +351,7 @@ def install_profile() -> str:
 
 #### 5.1 推荐：promlight 不再用 → 全量移除 promlight 条目
 
-**文件**：`<USER_HOME>\.codex\hooks.json`
+**文件**：`C:\Users\<USER>\.codex\hooks.json`
 
 **最终产物**（仅保留 stackchan `codex_hook.py`，promlight 全部移除）：
 
@@ -359,19 +359,19 @@ def install_profile() -> str:
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_DIR>/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_DIR>/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "PermissionRequest": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_DIR>/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_DIR>/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "SessionEnd": [
-      { "hooks": [ { "timeout": 3, "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_DIR>/agents/codex_hook.py", "statusMessage": "Notifying StackChan" } ] }
+      { "hooks": [ { "timeout": 3, "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan" } ] }
     ]
   }
 }
@@ -381,7 +381,7 @@ def install_profile() -> str:
 
 #### 5.2 备选：promlight 仍要用 → 给所有条目补 timeout
 
-若用户确认 promlight 仍用，则保留 promlight 条目，但**每一条都必须加 `timeout`**（PreToolUse/PostToolUse/SubagentStart/SubagentStop/PreCompact/PostCompact 当前缺失）。统一 `"timeout": 5`。同时核查 `<OTHER_PROJECT_DIR>/PromLight/agent_hook.py` 内部所有 `urllib.request.urlopen(...)` 的 timeout ≤ 3，防止僵尸端点挂起 codex 工具调用。
+若用户确认 promlight 仍用，则保留 promlight 条目，但**每一条都必须加 `timeout`**（PreToolUse/PostToolUse/SubagentStart/SubagentStop/PreCompact/PostCompact 当前缺失）。统一 `"timeout": 5`。同时核查 `D:/Promlight_rev/PromLight/agent_hook.py` 内部所有 `urllib.request.urlopen(...)` 的 timeout ≤ 3，防止僵尸端点挂起 codex 工具调用。
 
 #### 5.3 验收证据
 

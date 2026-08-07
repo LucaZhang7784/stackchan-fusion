@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """antigravity_hook.py - Antigravity 桌面版 / agy CLI hooks 事件 -> 融合网关
 
-配合 ~/.gemini/config/hooks.json 的 "fusion" 段使用:
+配合 ~/.gemini/config/hooks.json 的 "stackchan" 段使用:
   - PreToolUse     : 权限敏感工具执行前, 上报 question 事件(机器人唤醒后播报"需要确认")
   - PermissionRequest / PermissionDenied / Elicitation: 若触发则上报 question
   - Stop           : 任务结束, 上报 done(机器人可播报完成)
@@ -192,7 +192,7 @@ def main(argv) -> int:
     msg_uid = _msg_uid(payload, agent)
     _log(f"{event} {json.dumps(payload, ensure_ascii=False)[:300]}")
 
-    if event == "PreToolUse":
+    if event in ("PreToolUse", "BeforeTool", "agent.tool.starting"):
         tool = _tool_name(payload)
         if tool in QUESTION_TOOLS or tool.startswith("mcp_") or tool.startswith("browser_"):
             _post_agent(agent, "question", _question_summary(payload), session_id, msg_uid)
@@ -200,11 +200,11 @@ def main(argv) -> int:
     elif event in ("PermissionRequest", "PermissionDenied", "Elicitation"):
         _post_agent(agent, "question", _question_summary(payload), session_id, msg_uid)
         _emit({"decision": "allow"})
-    elif event == "Stop":
+    elif event in ("Stop", "AfterAgent", "agent.stop", "SessionEnd", "agent.session.end"):
         summary = _transcript_summary(payload) or str(payload.get("terminationReason") or "任务已结束")
         _post_agent(agent, "done", summary, session_id, msg_uid)
         _emit({"decision": "allow"})
-    elif event == "PostToolUse":
+    elif event in ("PostToolUse", "AfterTool", "agent.tool.finished"):
         _emit({})
     else:
         _emit({"decision": "allow"})

@@ -35,6 +35,35 @@
   Agents 手动调用 `vscode_hook.py --summary "..."` 亦可上报 done。
 - 网关 `_photo_state`/`_photo_lock` 照片重组状态机，photo 主题监听与 ACK 同链路。
 
+### 5. Antigravity 桌面播报修复（13:29，根治"重启后依然不播"）
+
+- 死穴一：`~/.gemini/config/hooks.json` 顶层命名空间被误改为 `"fusion"`，Antigravity IDE
+  只识别规范命名空间 `"stackchan"` / `"promlight"`，整段 Hook 被静默跳过 → 已还原为
+  `"stackchan"`（PreToolUse/PostToolUse/PermissionRequest/PermissionDenied/Elicitation/Stop）。
+- 死穴二：`agents/antigravity_hook.py` 事件名只匹配 `"Stop"`，而 IDE 实际上报
+  `"AfterAgent"`/`"agent.stop"` → 已升级为
+  `elif event in ("Stop", "AfterAgent", "agent.stop", "SessionEnd", "agent.session.end")`。
+- 验收：AfterAgent 模拟报文实测 `posted done ok antigravity_test-aft_*`；13:29:16 网关日志
+  `push ack [agent]: agy 任务完成`（真机播报 + ACK），pending 清空。
+- 约束：hooks.json 顶层命名空间**严禁再改成 "fusion"**。
+
+### 6. LED 灯环根治 + Prompt v3.6 保固（15:0x，真机确认播报绿→待机暖橙）
+
+- 根因：**PY32 GPIO13 未配置输出推挽**（对照 M5Stack 出厂固件 hal_io_expander，
+  WS2812×12 灯环驱动前必须设 0x04/0x0A/0x0C/0x14 bit5）→ 0x24/0x30 写入被
+  PY32 接受但灯环不驱动，灯恒为初始橙色。另有 mqtt push 重构丢失的
+  Phase 7.1 三防护（写失败静默、`led_manual_` 永久屏蔽状态色、I2C 无互斥）。
+- 固件（`reference/stackchan-xiaozhi-firmware-mqtt/.../m5stack_core_s3.cc`）：
+  `InitializePy32LedDevice` 补齐 GPIO13 输出+上拉+推挽出厂序列；`Py32WriteRegBlock`
+  失败日志+重试；`refreshLeds` 读-改-写；`led_manual_` 仅待机生效、活跃态强制
+  状态色、离开自动复位暖橙、Idle 待机锁；恢复 `i2c_bus_mutex_`（FreeRTOS
+  Mutex+50ms）+ 触屏 I2C 故障冷却 + 400ms 防踩踏。
+- Prompt：阿松 v3.5 → **v3.6**（LED 灯色归固件，严禁 LLM 调灯色表达情绪；
+  用户明确要求时同轮 `self.led.auto` 恢复）——需贴回 xiaozhi.me 控制台。
+- 刷机：app-only @0x410000，串口实测 `STATE LED -> speaking/neutral` 正常、
+  无 `PY32 I2C write failed`，网关 push ack 闭环；**真机目视：播报变绿、
+  播完回暖橙 ✅**。聆听蓝待「阿松」唤醒验证。
+
 ## 固件版本
 
 - **v1.2-mqttpush**（继续使用）：µ-law 播放、msg_uid/ACK 闭环、Phase 8.1 动作联动
@@ -50,6 +79,6 @@
 
 ## 待办 / 提醒
 
-- **重启 Antigravity 桌面版**让 `.gemini/config/hooks.json` 修复生效（Stop/question 才会上报）。
+- ~~重启 Antigravity 桌面版让修复生效~~ → 已重启，13:29 真机 ACK 验证通过。
 - VS Code 自动上报为半手动：在项目里跑 `vscode_hook.py --install-tasks` 生成 tasks.json。
 - GitHub 同步：v08.07 起 `<TAILSCALE_IP>`（Tailscale IP）与真实本地路径已从公开副本移除。

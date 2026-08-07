@@ -1,5 +1,11 @@
 # StackChan Fusion
 
+> **v08.08 (2026-08-07):** LED ring root-fixed (PY32 GPIO13 init + idle lock + I2C mutex;
+> speaking=green → idle=warm amber on device), Antigravity announcements fixed (hooks
+> namespace `stackchan` + AfterAgent/agent.stop aliases), Prompt v3.6 (LED owned by
+> firmware), firmware v1.2-mqttpush rebuilt.
+> **v08.07 (2026-08-07):** Phase 8 motion (done→Nod / question→TiltAsk) + `robot_snap`
+> camera MCP (12 tools) + Claude hooks on `settings.local.json` + VS Code dispatch refused.
 > **v08.06 (2026-08-06):** Announcement pipeline reworked — µ-law over EMQX MQTT with a
 > msg_uid idempotency + firmware-ACK closed loop; single-worker FIFO push; agent aliases +
 > fail-fast probe; VS Code integration; interactive Claude permission broadcast.
@@ -161,6 +167,19 @@ launchers (no flashing windows); `install_autostart.ps1` registers them.
 
 ## Version History
 
+### v08.08 (2026-08-07, afternoon)
+
+- **Antigravity announcements fixed**: `~/.gemini/config/hooks.json` namespace `"fusion"` →
+  `"stackchan"`; `antigravity_hook.py` event aliases add AfterAgent/agent.stop/
+  SessionEnd/agent.session.end; verified real-device push ack at 13:29.
+- **LED ring root fix**: PY32 GPIO13 was never initialized (output + push-pull), which is
+  why register writes "succeeded" but the ring stayed amber; added factory init sequence,
+  write retry, read-modify-write refresh, `led_manual_` idle-only lock, I2C mutex + touch
+  cooldown; firmware rebuilt (app-only @0x410000); speaking=green → idle=warm amber ✅.
+- **Prompt v3.6**: LED color is owned by firmware; the LLM must not call `self.led.*` for
+  mood; restore `self.led.auto` in the same turn when the user asks to change the color.
+- Archive `version.08.08/` + sanitized GitHub sync (MAC/domain/keys/user paths → placeholders).
+
 ### v08.07 (2026-08-07)
 
 - **Phase 8.1 motion engine**: firmware `done/error` → servo Nod, `question` → head
@@ -264,3 +283,4 @@ domains are placeholders (`YOUR_*` / `AA:BB:CC:DD:EE:FF`). Real values live
 only in local `.env`, `config.json`, and docker configs. `.gitignore` excludes
 all runtime-sensitive files. When deploying, replace each item per
 [DEPLOY.md](DEPLOY.md) section 4.
+

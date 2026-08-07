@@ -42,9 +42,22 @@ async def push_text(conn, text):
     from core.providers.tts.dto.dto import SentenceType
     from core.utils.util import audio_bytes_to_data_stream
 
+    # 推送播报不结束会话: 保持连接, 供连续推送/后续对话复用
+    try:
+        conn.close_after_chat = False
+    except Exception:
+        pass
+
     ws = getattr(conn, "websocket", None)
     if ws is None or getattr(ws, "closed", False):
         return False
+
+    # GLM-Realtime: 推送前打断实时会话, 避免双声道抢播
+    if getattr(conn.llm, "is_realtime", False) and hasattr(conn.llm, "cancel"):
+        try:
+            await conn.llm.cancel()
+        except Exception:
+            pass
 
     # 等待 TTS 初始化(最多 3 秒)
     for _ in range(30):
@@ -73,4 +86,10 @@ async def push_text(conn, text):
     conn.sentence_id = uuid.uuid4().hex
     await sendAudioMessage(conn, SentenceType.FIRST, opus_packets, text)
     await sendAudioMessage(conn, SentenceType.LAST, [], None)
+    # GLM-Realtime: 推送结束后恢复实时会话 sentence_id, 后续音频不被丢弃
+    if getattr(conn.llm, "is_realtime", False) and hasattr(conn.llm, "resync_sentence_id"):
+        try:
+            conn.llm.resync_sentence_id()
+        except Exception:
+            pass
     return True

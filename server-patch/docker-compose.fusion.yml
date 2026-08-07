@@ -1,10 +1,26 @@
 # 融合补丁覆盖挂载 (与 server/docker-compose.yml 一起使用)
 #   docker compose -f <PROJECT_ROOT>\server\docker-compose.yml ^
-#                  -f <PROJECT_DIR>\server-patch\docker-compose.fusion.yml ^
+#                  -f <PROJECT_ROOT>\fusion.firmware.0731\server-patch\docker-compose.fusion.yml ^
 #                  up -d xiaozhi-esp32-server
 services:
   xiaozhi-esp32-server:
+    # Phase 7.1: 信任企业 WARP Gateway CA, 消除 CERTIFICATE_VERIFY_FAILED(不用 CERT_NONE)
+    command: sh -c "update-ca-certificates && exec python app.py"
+    environment:
+      - REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+      - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     volumes:
-      - <PROJECT_DIR>/server-patch/core/fusion_push.py:/opt/xiaozhi-esp32-server/core/fusion_push.py:ro
-      - <PROJECT_DIR>/server-patch/core/connection.py:/opt/xiaozhi-esp32-server/core/connection.py:ro
-      - <PROJECT_DIR>/server-patch/core/http_server.py:/opt/xiaozhi-esp32-server/core/http_server.py:ro
+      - D:/ProcessCenter/StackChan/server/data/warp-ca.crt:/usr/local/share/ca-certificates/warp-ca.crt:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/fusion_push.py:/opt/xiaozhi-esp32-server/core/fusion_push.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/connection.py:/opt/xiaozhi-esp32-server/core/connection.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/http_server.py:/opt/xiaozhi-esp32-server/core/http_server.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/websocket_server.py:/opt/xiaozhi-esp32-server/core/websocket_server.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/providers/llm/openai/openai.py:/opt/xiaozhi-esp32-server/core/providers/llm/openai/openai.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/providers/llm/qwen_audio_realtime:/opt/xiaozhi-esp32-server/core/providers/llm/qwen_audio_realtime:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/providers/asr/aliyunbl_stream.py:/opt/xiaozhi-esp32-server/core/providers/asr/aliyunbl_stream.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/providers/asr/base.py:/opt/xiaozhi-esp32-server/core/providers/asr/base.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/providers/tts/edge.py:/opt/xiaozhi-esp32-server/core/providers/tts/edge.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/providers/tts/base.py:/opt/xiaozhi-esp32-server/core/providers/tts/base.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/handle/textHandler/listenMessageHandler.py:/opt/xiaozhi-esp32-server/core/handle/textHandler/listenMessageHandler.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/handle/receiveAudioHandle.py:/opt/xiaozhi-esp32-server/core/handle/receiveAudioHandle.py:ro
+      - D:/ProcessCenter/StackChan/fusion.firmware.0731/server-patch/core/handle/sendAudioHandle.py:/opt/xiaozhi-esp32-server/core/handle/sendAudioHandle.py:ro

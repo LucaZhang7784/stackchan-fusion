@@ -9,16 +9,13 @@
   "allow_claude": true,
   "codex_cli": "codex",
   "claude_cli": "claude",
-  "exec_cwd": "<PROJECT_DIR>\\gateway",
+  "exec_cwd": "D:\\ProcessCenter\\StackChan\\fusion.firmware.0731\\gateway",
   "max_output_chars": 4000,
   "max_timeout_s": 600,
   "http_host": "0.0.0.0",
   "http_port": 8010,
-  "push_interval_s": 5,
-  "push_direct_done": true,
   "push_mqtt_host": "broker-cn.emqx.io",
   "push_mqtt_port": 1883,
-  "push_topic_prefix": "stackchan",
   "push_tts_voice": "zh-HK-HiuMaanNeural",
   "push_tts_rate": "+20%"
 }

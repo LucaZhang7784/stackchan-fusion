@@ -1,5 +1,9 @@
 # StackChan Fusion
 
+> **v08.09 (2026-08-07):** Claude hooks Windows fix (settings.local.json → settings.json,
+> workaround for anthropics/claude-code#64699), installer rewritten for PowerShell 5.1,
+> tray "Install/Repair Claude Hooks" menu, gateway two-rail fix (MQTT 2-frame batches to
+> avoid TCP fragmentation + LLM ≤60-char spoken summaries).
 > **v08.08 (2026-08-07):** LED ring root-fixed (PY32 GPIO13 init + idle lock + I2C mutex;
 > speaking=green → idle=warm amber on device), Antigravity announcements fixed (hooks
 > namespace `stackchan` + AfterAgent/agent.stop aliases), Prompt v3.6 (LED owned by

@@ -192,12 +192,12 @@ def _save_confirmations(items: list[dict]) -> None:
     CONFIRM_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def confirm_register(agent: str, question: str, reply_file: str = "") -> dict:
+def confirm_register(agent: str, question: str, reply_file: str = "", msg_uid: str = "") -> dict:
     items = _confirmations()
     c = {
         "id": uuid.uuid4().hex[:8], "agent": agent,
         "question": (question or "")[:500], "reply_file": reply_file,
-        "created": _now(), "answered": False,
+        "created": _now(), "answered": False, "msg_uid": msg_uid,
     }
     items.append(c)
     _save_confirmations(items)
@@ -235,6 +235,30 @@ def confirm_answer(agent: str, answer: str) -> tuple[bool, str]:
                     return True, f"已记录回答, 但回写文件失败: {e}"
             return True, "已回复 " + agent
     return False, "没有该 agent 的待确认问题"
+
+
+def confirm_answer_by_uid(msg_uid: str, answer: str) -> tuple[bool, str, dict | None]:
+    """Phase 9-B: 按 msg_uid 精确回答待确认问题(固件触屏浮层点击回调)。
+    返回 (ok, 消息, 被回答的 confirmation 对象)。"""
+    if not msg_uid:
+        return False, "缺少 msg_uid", None
+    items = _confirmations()
+    for c in items:
+        if not c.get("answered") and c.get("msg_uid") == msg_uid:
+            c["answered"] = True
+            c["answer"] = (answer or "")[:500]
+            c["answered_at"] = _now()
+            c["answered_by"] = "touchscreen"
+            _save_confirmations(items)
+            reply_file = c.get("reply_file", "")
+            if reply_file:
+                try:
+                    Path(reply_file).write_text(answer, encoding="utf-8")
+                except Exception as e:
+                    return True, f"已记录回答, 但回写文件失败: {e}", c
+            return True, "已回复 " + str(c.get("agent", "")), c
+    # 兼容旧数据: msg_uid 未登记的确认, 回退到该 agent 最近一条
+    return False, f"没有 msg_uid={msg_uid} 的待确认问题", None
 
 
 # ---------------------------------------------------------------- agent 定义

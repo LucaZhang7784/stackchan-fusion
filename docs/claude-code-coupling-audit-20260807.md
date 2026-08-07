@@ -359,19 +359,19 @@ def install_profile() -> str:
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_ROOT>/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_ROOT>/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "PermissionRequest": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_ROOT>/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_ROOT>/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "SessionEnd": [
-      { "hooks": [ { "timeout": 3, "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan" } ] }
+      { "hooks": [ { "timeout": 3, "type": "command", "command": "C:/WINDOWS/py.EXE -3 <PROJECT_ROOT>/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan" } ] }
     ]
   }
 }

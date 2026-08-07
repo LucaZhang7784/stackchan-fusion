@@ -76,12 +76,17 @@ DEFAULT_CONFIG = {
     "push_topic_prefix": "stackchan",
     "push_tts_voice": "zh-HK-HiuMaanNeural",  # 女声粤语曉曼(中英混杂); 备选 ja-JP-NanamiNeural(日语) / zh-TW-HsiaoChenNeural(台普)
     "push_tts_rate": "+20%",
+    # Phase 9-D: 本地粤语 TTS 兜底 + 离线 LLM
+    "tts_cache_size": 200,  # TTS 帧缓存 LRU 容量(按文本 SHA256)
+    "tts_fallback_model_dir": "tts_models/vits-cantonese-hf-xiaomaiiwn",  # sherpa-onnx 粤语女声(小美)
+    "local_llm_host": "http://127.0.0.1:11434",  # Ollama
+    "local_llm_model": "qwen3:8b",
 }
 
 TOOL_NAMES = [
     "agent_status", "robot_status", "docker_status", "ws_probe",
     "codex_query", "claude_query", "robot_say", "robot_pending",
-    "agent_query", "agent_pending", "agent_confirm",
+    "agent_query", "agent_pending", "agent_confirm", "local_query",
     "robot_snap",
 ]
 
@@ -256,6 +261,10 @@ def _photo_topic() -> str:
     return f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/photo"
 
 
+def _confirm_topic() -> str:
+    return f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/confirm"
+
+
 def _on_ack(client, userdata, msg) -> None:
     """固件 ACK 回执: payload 为 msg_uid(兼容旧固件的文本回执)。"""
     try:
@@ -291,6 +300,38 @@ def _on_photo(client, userdata, msg) -> None:
                 ev.set()
 
 
+def _on_confirm(client, userdata, msg) -> None:
+    """Phase 9-B: 固件触屏浮层点击回执: payload = msg_uid + \\x01 + allow|deny。
+    按 msg_uid 精确回答待确认问题, 并主动播报确认结果。"""
+    try:
+        payload = msg.payload
+        if not payload:
+            return
+        uid, _, answer = payload.partition(b"\x01")
+        uid = uid.decode("utf-8", "replace").strip()
+        answer = answer.decode("utf-8", "replace").strip().lower()
+        if not uid or answer not in ("allow", "deny"):
+            log(f"confirm ignore bad payload: {payload[:60]!r}")
+            return
+        ok, res, c = agents_core.confirm_answer_by_uid(uid, "允许" if answer == "allow" else "拒绝")
+        if not ok:
+            log(f"confirm by uid failed: {res}")
+            return
+        agent = (c or {}).get("agent", "")
+        label = "已允许" if answer == "allow" else "已拒绝"
+        text = f"{agent} {label}: {(c or {}).get('question', '')[:80]}"
+        log(f"confirm ok: {uid} -> {answer} ({res})")
+        entry = {"id": uuid.uuid4().hex[:8], "text": text, "source": "confirm",
+                 "action": "done", "created_at": _now()}
+        path = Path(CFG["pending_file"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        _enqueue_push(text, "confirm", "pending", entry["id"], "done")
+    except Exception as e:
+        log(f"confirm handler error: {e}")
+
+
 def _on_push_message(client, userdata, msg) -> None:
     try:
         topic = msg.topic or ""
@@ -298,6 +339,8 @@ def _on_push_message(client, userdata, msg) -> None:
             _on_ack(client, userdata, msg)
         elif topic.endswith("/photo"):
             _on_photo(client, userdata, msg)
+        elif topic.endswith("/confirm"):
+            _on_confirm(client, userdata, msg)
     except Exception:
         pass
 
@@ -307,6 +350,7 @@ def _on_push_connect(client, userdata, flags, rc, properties=None) -> None:
     try:
         client.subscribe(_ack_topic(), 0)
         client.subscribe(_photo_topic(), 1)  # QoS1: 照片分块不许丢
+        client.subscribe(_confirm_topic(), 1)  # Phase 9-B: 触屏审批回执 QoS1 不丢
     except Exception:
         pass
 
@@ -356,13 +400,15 @@ def _push_mqtt() -> paho.Client:
             _push_client.loop_stop()  # 清理旧后台 Paho 网络线程, 防断连重建时遗留
         except Exception:
             pass
-        _push_client = paho.Client(client_id="fusion-gateway", protocol=paho.MQTTv311)
+        # client_id 唯一化(带 pid): 防多实例/测试脚本同 id 互踢导致 ACK 订阅丢失
+        _push_client = paho.Client(client_id=f"fusion-gateway-{os.getpid()}", protocol=paho.MQTTv311)
         _push_client.on_message = _on_push_message
         _push_client.on_connect = _on_push_connect
         _push_client.connect(str(CFG.get("push_mqtt_host", "127.0.0.1")), int(CFG.get("push_mqtt_port", 1883)), 10)
         _push_client.loop_start()
         _push_client.subscribe(_ack_topic(), 0)
         _push_client.subscribe(_photo_topic(), 1)
+        _push_client.subscribe(_confirm_topic(), 1)
     return _push_client
 
 # ---- 指标 1: 线程安全 Push FIFO + 单 Worker(严禁多 Agent 消息并发交错倾倒) ----
@@ -453,14 +499,14 @@ def _push_worker() -> None:
             ok, err, dur, sent_text = push_send(text, msg_uid, action)
             if ok:
                 if _wait_ack(msg_uid or sent_text):
-                    log(f"push ack [{item.get('source')}]: {text[:150]}")
+                    log(f"push ack [{item.get('source')}]: {sent_text[:150]}")  # 记录实际播报文本(摘要后)
                     _finish_push_record(kind, record_id, True)  # 已送达 -> 标记 pushed
                 else:
-                    log(f"push no-ack(机器人离线? 保留兜底): {text[:150]}")
+                    log(f"push no-ack(机器人离线? 保留兜底): {sent_text[:150]}")
                     _finish_push_record(kind, record_id, False)
                     pending_mark_attempted(record_id)  # 退避期内不重试
             else:
-                log(f"push fail: {err} :: {text[:150]}")
+                log(f"push fail: {err} :: {sent_text[:150] or text[:150]}")
                 _finish_push_record(kind, record_id, False)
                 pending_mark_attempted(record_id)
             # 前一条播完(音频时长+0.5s)再取下一条
@@ -477,7 +523,7 @@ def _push_worker() -> None:
 _PUSH_SAMPLE_RATE = 16000
 _PUSH_FRAME_MS = 60
 _PUSH_FRAME_BYTES = _PUSH_SAMPLE_RATE * 1 * _PUSH_FRAME_MS // 1000  # 960 (µ-law 1B/采样)
-_PUSH_BATCH_FRAMES = 8  # 8帧=480ms 音频/批, 报文 ~7.7KB < 固件 8KB MQTT buffer
+_PUSH_BATCH_FRAMES = 2  # 轨一: 2帧=120ms 音频/批, 报文 ~1.9KB < MTU, 根治 TCP 分片(offset!=0)导致固件丢帧吞字
 _PUSH_BATCH_INTERVAL_S = 0.05  # 轻度节流防突发, 不影响实时性(480ms 音频 >> 50ms 间隔)
 
 async def _edge_tts_mp3(text: str, out_path: str) -> None:
@@ -507,35 +553,192 @@ def _edge_tts_mp3_sync(text: str, out_path: str) -> None:
         raise result["err"]
 
 
-def _tts_ulaw_frames(text: str) -> list[bytes]:
-    """EdgeTTS -> ffmpeg 出 16kHz 单声道 s16le PCM -> µ-law(1B/采样), 切成 60ms 帧(960B/帧)。
-    16k 与固件 I2S 输出同频; 固件端 µ-law 查表还原成 s16le 进播放队列出声。"""
-    mp3 = os.path.join(tempfile.gettempdir(), "fusion_push_tts.mp3")
-    if os.path.exists(mp3):
-        os.remove(mp3)
-    _edge_tts_mp3_sync(text, mp3)
-    pcm = subprocess.run([_FFMPEG, "-y", "-i", mp3, "-f", "s16le",
-                          "-ar", str(_PUSH_SAMPLE_RATE), "-ac", "1", "-"],
-                         capture_output=True).stdout
-    ulaw = audioop.lin2ulaw(pcm, 2)
+# ---- Phase 9-D: TTS LRU 缓存 + 本地粤语 TTS 兜底(sherpa-onnx) ----
+from collections import OrderedDict
+
+_tts_cache: OrderedDict = OrderedDict()
+_tts_cache_lock = threading.Lock()
+_sherpa_tts = None
+_sherpa_tts_lock = threading.Lock()
+
+
+def _sherpa_tts_get():
+    """懒加载 sherpa-onnx 粤语 TTS(模型 ~108MB, 首次加载 ~0.5-1s, 只加载一次)。"""
+    global _sherpa_tts
+    _ensure_cfg()
+    if _sherpa_tts is not None:
+        return _sherpa_tts
+    with _sherpa_tts_lock:
+        if _sherpa_tts is not None:
+            return _sherpa_tts
+        import sherpa_onnx
+        model_dir = Path(CFG.get("tts_fallback_model_dir", "tts_models/vits-cantonese-hf-xiaomaiiwn"))
+        if not model_dir.is_absolute():
+            model_dir = ROOT / model_dir
+        cfg = sherpa_onnx.OfflineTtsConfig(
+            model=sherpa_onnx.OfflineTtsModelConfig(
+                vits=sherpa_onnx.OfflineTtsVitsModelConfig(
+                    model=str(model_dir / "vits-cantonese-hf-xiaomaiiwn.onnx"),
+                    lexicon=str(model_dir / "lexicon.txt"),
+                    tokens=str(model_dir / "tokens.txt"),
+                    data_dir=str(model_dir),
+                ),
+                num_threads=2,
+            ),
+            rule_fsts=str(model_dir / "rule.fst"),
+            max_num_sentences=1,
+        )
+        _sherpa_tts = sherpa_onnx.OfflineTts(cfg)
+        log(f"sherpa-onnx 粤语 TTS 已加载: {model_dir}")
+    return _sherpa_tts
+
+
+def _sherpa_tts_ulaw_frames(text: str) -> list[bytes]:
+    """本地粤语 TTS: sherpa-onnx 出 22050Hz float32 PCM -> ×32767 转 int16
+    -> 降到 16kHz -> µ-law, 切成 60ms 帧(960B/帧), 与 EdgeTTS 帧格式完全一致。"""
+    tts = _sherpa_tts_get()
+    # 语速 +10%: sherpa speed 1.0 偏慢(基准), 用户实测偏快已按基准+10%校准
+    audio = tts.generate(text, sid=0, speed=float(CFG.get("tts_fallback_speed", 1.1)))
+    samples = getattr(audio, "samples", None)
+    if samples is None or len(samples) == 0:
+        raise RuntimeError("sherpa-onnx 粤语 TTS 无输出")
+    import numpy as np
+    pcm16 = (np.asarray(samples, dtype=np.float32) * 32767.0).astype(np.int16)
+    raw = pcm16.tobytes()
+    # 22050 -> 16000 (audioop.ratecv 整数比例)
+    resampled, _ = audioop.ratecv(raw, 2, 1, int(getattr(audio, "sample_rate", 22050)), _PUSH_SAMPLE_RATE, None)
+    ulaw = audioop.lin2ulaw(resampled, 2)
     return [ulaw[i:i + _PUSH_FRAME_BYTES]
             for i in range(0, len(ulaw) - len(ulaw) % _PUSH_FRAME_BYTES, _PUSH_FRAME_BYTES)]
 
 
+def _tts_cache_get(key: str) -> list[bytes] | None:
+    with _tts_cache_lock:
+        if key in _tts_cache:
+            _tts_cache.move_to_end(key)
+            return _tts_cache[key]
+    return None
+
+
+def _tts_cache_put(key: str, frames: list[bytes]) -> None:
+    with _tts_cache_lock:
+        _tts_cache[key] = frames
+        _tts_cache.move_to_end(key)
+        max_size = max(1, int(CFG.get("tts_cache_size", 200) or 200))
+        while len(_tts_cache) > max_size:
+            _tts_cache.popitem(last=False)
+
+
+def _tts_ulaw_frames(text: str) -> list[bytes]:
+    """EdgeTTS -> ffmpeg 出 16kHz 单声道 s16le PCM -> µ-law(1B/采样), 切成 60ms 帧(960B/帧)。
+    16k 与固件 I2S 输出同频; 固件端 µ-law 查表还原成 s16le 进播放队列出声。
+    Phase 9-D: 文本 SHA256 LRU 缓存(默认 200 条); EdgeTTS 失败时回退本地粤语 sherpa-onnx。"""
+    key = __import__("hashlib").sha256(text.encode("utf-8")).hexdigest()
+    cached = _tts_cache_get(key)
+    if cached is not None:
+        return cached
+    frames: list[bytes] = []
+    edge_err: Exception | None = None
+    try:
+        mp3 = os.path.join(tempfile.gettempdir(), "fusion_push_tts.mp3")
+        if os.path.exists(mp3):
+            os.remove(mp3)
+        _edge_tts_mp3_sync(text, mp3)
+        pcm = subprocess.run([_FFMPEG, "-y", "-i", mp3, "-f", "s16le",
+                              "-ar", str(_PUSH_SAMPLE_RATE), "-ac", "1", "-"],
+                             capture_output=True).stdout
+        ulaw = audioop.lin2ulaw(pcm, 2)
+        frames = [ulaw[i:i + _PUSH_FRAME_BYTES]
+                  for i in range(0, len(ulaw) - len(ulaw) % _PUSH_FRAME_BYTES, _PUSH_FRAME_BYTES)]
+    except Exception as e:
+        edge_err = e
+    if not frames:
+        # EdgeTTS 失败/空音频 -> 本地粤语兜底, 保证离线也能播报
+        log(f"EdgeTTS 不可用({edge_err}), 回退本地粤语 TTS: {text[:60]}")
+        frames = _sherpa_tts_ulaw_frames(text)
+    if not frames:
+        raise RuntimeError("TTS 无音频输出")
+    _tts_cache_put(key, frames)
+    return frames
+
+
+def _summarize_for_speech(text: str, max_chars: int = 60) -> str:
+    """轨二(吞字根治): 长文本 LLM 口语化摘要, 送入 TTS 引擎前调用。
+    len(text) > max_chars 时用本地 LLM(Ollama)提炼为 ≤max_chars 字的口语化摘要;
+    LLM 不可用/超时/输出异常时降级截断 text[:max_chars], 保证推流永不卡死。"""
+    text = str(text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    host = str(CFG.get("local_llm_host", "http://127.0.0.1:11434"))
+    models = [str(CFG.get("local_llm_model", "qwen3.5:9b"))]
+    for m in ("qwen3.5:9b", "gemma4:12b"):
+        if m not in models:
+            models.append(m)
+    prompt = (
+        f"把下面这段话提炼成不超过 {max_chars} 个字的口语化中文摘要，"
+        "保留核心信息，适合语音播报。只输出摘要正文，不要引号、不要markdown、不要任何解释。\n\n"
+        f"原文：{text[:800]}"
+    )
+    for model in models:
+        try:
+            payload = json.dumps({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "think": False,
+                "options": {"num_predict": max_chars * 2 + 20},
+            }).encode("utf-8")
+            req = urllib.request.Request(f"{host.rstrip('/')}/api/chat", data=payload,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=12.0) as r:
+                out = json.loads(r.read().decode("utf-8"))
+            content = str((out.get("message") or {}).get("content") or "").strip()
+            if not content:
+                content = str((out.get("message") or {}).get("thinking") or "").strip()
+            content = " ".join(content.split()).strip().strip('"“”「」\'')
+            if content and len(content) <= max_chars + 10:
+                return content[:max_chars]
+        except Exception:
+            continue
+    return text[:max_chars]
+
+
+def _prewarm_local_llm() -> None:
+    """后台预热本地 LLM(Ollama), 避免首次长文本摘要因冷加载超时降级截断。"""
+    try:
+        host = str(CFG.get("local_llm_host", "http://127.0.0.1:11434"))
+        model = str(CFG.get("local_llm_model", "qwen3.5:9b"))
+        payload = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": "回复：好"}],
+            "stream": False,
+            "think": False,
+            "options": {"num_predict": 8},
+        }).encode("utf-8")
+        req = urllib.request.Request(f"{host.rstrip('/')}/api/chat", data=payload,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            r.read()
+        log(f"本地 LLM 预热完成: {model}")
+    except Exception as e:
+        log(f"本地 LLM 预热失败(不影响启动): {e}")
+
+
 def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str, float, str]:
     """MQTT 主动推送: EdgeTTS 合成 -> 16k µ-law 60ms 帧 -> stackchan/{mac}/push。
-    指标 3: 语音推流收紧为 150 字口语摘要(≤15s); 完整原文由调用方保留在
+    指标 3: 语音推流 ≤60 字口语化摘要(轨二 LLM 提炼, 失败降级截断); 完整原文由调用方保留在
     pending.jsonl 与日志。START 报头: \x01+msg_uid+\x00+action+\x00+text
     (Phase 8.1: action=done/question 驱动固件点头/偏头), 供固件 ACK 回执。
     返回 (ok, err, 音频时长秒, 实际发送文本)。"""
     try:
         text = _tts_text(text, limit=150)
+        text = _summarize_for_speech(text, max_chars=60)  # 轨二: 长文本 LLM 口语化摘要(≤60字)后送 TTS, 根治长文本吞字
         topic = f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/push"
         client = _push_mqtt()
         # 先合成全部 µ-law 帧, 再发 START: 严禁机器人先进 Speaking 空等 TTS
         # (否则 3s 断流看门狗会误判为断流, 把帧全部丢弃 = 播报被掐掉)
         frames = _tts_ulaw_frames(text)
-        # QoS0 + 8帧/条批量: 每批 7682B; 固件 MQTT buffer 8KB + poll 读超时 5s 防断连
+        # QoS0 + 2帧/条批量: 每批 ~1922B(< MTU, 不触发 TCP 分片); 固件 MQTT buffer 8KB + poll 读超时 5s 防断连
         if msg_uid and action:
             client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + action.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=0)
         elif msg_uid:
@@ -786,9 +989,39 @@ def claude_query(instruction: str, timeout_s: int = 120) -> str:
 
 
 @mcp.tool()
+def local_query(instruction: str, timeout_s: int = 90) -> str:
+    """离线本地大模型(Ollama qwen3:8b)回答通用问题, 不依赖云端 LLM/网络。
+    机器人端: 用户问常识/闲聊/本地知识, 或云端链路不可用时调用。返回 ≤max_output_chars 摘要。"""
+    host = str(CFG.get("local_llm_host", "http://127.0.0.1:11434"))
+    model = str(CFG.get("local_llm_model", "qwen3:8b"))
+    timeout_s = max(10, min(int(timeout_s), 300))
+    maxc = int(CFG.get("max_output_chars", 4000))
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": str(instruction)}],
+        "stream": False,
+        "think": False,  # qwen3 默认开思考模式, 内容会进 thinking 字段; 关闭后直接出正文
+        "options": {"num_predict": min(maxc // 2, 2048)},
+    }).encode("utf-8")
+    try:
+        req = urllib.request.Request(f"{host.rstrip('/')}/api/chat", data=payload,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout_s) as r:
+            out = json.loads(r.read().decode("utf-8"))
+        content = str((out.get("message") or {}).get("content") or "").strip()
+        if not content:
+            content = str((out.get("message") or {}).get("thinking") or "").strip()
+        if not content:
+            return f"[本地 LLM 空响应: {model}]"
+        return content[:maxc]
+    except Exception as e:
+        return f"本地 LLM 不可用({host}, {model}): {e}"
+
+
+@mcp.tool()
 async def robot_say(text: str) -> str:
     """给机器人排队一条待播报消息(Codex/Claude 侧调用)。进入单 Worker 推送队列串行播报;
-    完整原文保留在 pending.jsonl 与日志, 语音只播 150 字摘要。机器人离线时保留队列,
+    完整原文保留在 pending.jsonl 与日志, 语音只播 ≤60 字口语化摘要。机器人离线时保留队列,
     唤醒后由 robot_pending 朗读。"""
     text = str(text or "").strip()
     if not text:
@@ -946,7 +1179,7 @@ def build_http_app():
             if dup or _pending_has_id(msg_uid):
                 return JSONResponse({"ok": True, "dup": True, "pending": pending_count()})
         if etype == "question":
-            c = agents_core.confirm_register(agent, summary, reply_file)
+            c = agents_core.confirm_register(agent, summary, reply_file, msg_uid)
             # 立即入队主动发声: agent 弹窗求确认时机器人桌头主动提醒, 不再静默等唤醒朗读
             text = f"{agent} 需要确认: {summary}"
             entry = {"id": msg_uid or uuid.uuid4().hex[:8], "text": text[:300], "source": "agent",
@@ -1050,12 +1283,13 @@ def main() -> None:
         from mcp.server.transport_security import TransportSecuritySettings
         mcp.settings.transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "YOUR_TAILSCALE_IP:*"],
+            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "<TAILSCALE_IP>:*"],
         )
     except Exception as e:
         log(f"transport security config error: {e}")
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
     threading.Thread(target=_push_worker, daemon=True).start()  # 单 Worker 串行推流(指标 1)
+    threading.Thread(target=_prewarm_local_llm, daemon=True).start()  # 预热本地 LLM, 首次长文本摘要不降级截断
     if int(CFG.get("push_interval_s", 5) or 0) > 0:
         threading.Thread(target=_push_loop, daemon=True).start()
 

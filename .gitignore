@@ -20,3 +20,8 @@ backup-*/
 # IDE
 .vscode/
 .idea/
+
+# 固件 app 二进制(内嵌 OTA 域名/Tailscale IP, 公共仓不发布; 完整产物保留在本地 version.* 存档)
+firmware/**/xiaozhi.bin
+firmware/**/xiaozhi.elf
+firmware/**/merged-binary.bin

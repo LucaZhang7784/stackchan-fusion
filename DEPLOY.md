@@ -102,7 +102,7 @@ powershell -ExecutionPolicy Bypass -File gateway/install_autostart.ps1
 | Agent | 配置 |
 |---|---|
 | codex | `~/.codex/hooks.json` 各事件指向 `agents/codex_hook.py`；`~/.codex/config.toml` 加 `bypass_hook_trust=true`、`[windows] sandbox='unelevated'` |
-| claude | `~/.claude/settings.local.json` hooks 指向 `agents/claude_hook.py`（跑 `agents/install_claude_hooks.ps1`；local 优先级高，ccswitch 切模型不覆盖）；确认回环需启动 `agents/confirm_mcp.py` |
+| claude | `~/.claude/settings.json` hooks 指向 `agents/claude_hook.py`（跑 `agents/install_claude_hooks.ps1`；v08.09 起主存 settings.json——Windows 2.1.x 的 settings.local.json 有 #64699 静默失效 BUG；ccswitch 切模型覆盖后重跑脚本或托盘「安装/修复 Claude Hooks」自愈）；确认回环需启动 `agents/confirm_mcp.py` |
 | agy / Antigravity | `~/.gemini/config/hooks.json` 的 `stackchan` 段指向 `agents/antigravity_hook.py`（命名空间必须是 `stackchan`/`promlight`，IDE 才识别；改完需重启 Antigravity 桌面版） |
 | pi | `~/.pi/agent/settings.json` 注册 `extensions/hooks-bridge.ts`（把文件放进 `~/.pi/agent/extensions/`） |
 

@@ -1,6 +1,6 @@
 # StackChan 融合项目记忆（权威版）
 
-> 更新: 2026-08-07 (+08:00) · 会话开始时先读本文件再动手。
+> 更新: 2026-08-07 晚 (+08:00) · v08.09 · 会话开始时先读本文件再动手。
 
 ## 一、当前架构（云链路 + 唤醒播报）
 
@@ -12,7 +12,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
                               │ agent_status / agent_query / agent_pending /
                               │ agent_confirm / agent_result_check / robot_snap / docker_status ...
                               ▼
-                        融合网关 fusion_gateway.py (:8010, 12 工具)
+                        融合网关 fusion_gateway.py (:8010, 13 工具, 含 local_query)
                               │
         ┌─────────────────────┼──────────────────────┐
    codex(CLI/桌面, hooks)  claude(hooks+确认回环)  agy/Antigravity(fusion hooks)  pi(扩展)
@@ -77,8 +77,8 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 | Agent | 方式 | 状态 |
 |---|---|---|
 | codex | `~/.codex/hooks.json`(5 事件→codex_hook.py, v08.07 清掉 PromLight 僵尸钩子) + `config.toml` `bypass_hook_trust=true` + `[windows] sandbox='unelevated'` | ✅ 桌面+CLI 都上报 |
-| claude | `~/.claude/settings.local.json` hooks→claude_hook.py（v08.07 起 local 优先, ccswitch 切模型不覆盖）+ confirm_mcp.py（确认回环完整） | ✅ |
-| agy/Antigravity | `~/.gemini/config/hooks.json` **stackchan 段**（2026-08-07 修复: 原误改的 "fusion" 命名空间不被 IDE 识别, 已还原为 "stackchan"; 事件名补 AfterAgent/agent.stop/SessionEnd/agent.session.end 别名）; CLI 按 artifactDirectoryPath 含 antigravity-cli 归属 agent=agy | ✅ 已修复+真机 ACK |
+| claude | `~/.claude/settings.json` hooks→claude_hook.py（v08.09 起主存 settings.json: Windows 2.1.x 的 settings.local.json 有 #64699 静默失效 BUG; ccswitch 覆盖后托盘「安装/修复 Claude Hooks」自愈）+ confirm_mcp.py（确认回环完整） | ✅ |
+| agy/Antigravity | `~/.gemini/config/hooks.json` **标准结构**（顶层 `hooks` 键 + matcher + hooks[command]，2026-08-07 15:46 根治: 命名空间结构会被语言服务器整体拒绝）; 事件名用桌面版支持的 SessionStart/PreToolUse/PostToolUse/PermissionRequest/PermissionDenied/Elicitation/Stop; CLI 按 artifactDirectoryPath 含 antigravity-cli 归属 agent=agy | ✅ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → 网关 8010; 工具走 xiaozhi 8003 /api/push | ✅ |
 
 机器人任务执行方式: `agent_query` 在 agent 自己的可见窗口执行
@@ -120,9 +120,10 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 12. **设备端 AEC 导致机器人无反应/重启（2026-08-04）**: v1.0.3 开 AEC 后 `audio_input`
     线程在 `dios_ssp_aec_erl_est_process → complex_abs2` 死循环（task_wdt 每 10s 触发）;
     addr2line 定位后回退 AEC（v1.0.4）, 恢复 VAD(WebRTC) 管线, task_wdt=0。**AEC 方案废弃**。
-13. **长播报时断时续/吞字（2026-08-04, 处理中→Pending）**: v1.0.6 已加大解码缓冲
-    （2.4s→4.8s）+ 播放余量（2→4）+ 入队背压不丢包; 用户反馈仍时断时续。
-    待排查方向: 多段 TTS 段边界 `ResetDecoder()` 清缓冲 / 服务器突发推送欠载 / WS 断流。
+13. **长播报时断时续/吞字（2026-08-04, v08.09 网关侧根治）**: v1.0.6 已加大解码缓冲
+    （2.4s→4.8s）+ 播放余量（2→4）+ 入队背压不丢包; v08.09 网关两轨修复——
+    MQTT 2帧/批（~1.9KB < MTU, 根治 TCP 分片丢帧）+ LLM ≤60 字口语化摘要
+    （18:23:54 221字→50字真机 ACK）。固件侧段边界 `ResetDecoder()` 仍为备份待查项。
 14. **Antigravity 桌面重启后仍不播报（2026-08-07 13:29 修复, 防复发）**:
     - 死穴一: `~/.gemini/config/hooks.json` 顶层命名空间被误改为 `"fusion"`, IDE 只识别
       规范命名空间 `"stackchan"` / `"promlight"`, 整段 Hook 被静默忽略 → 已还原为 `"stackchan"`。
@@ -132,6 +133,10 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
     - 验收: AfterAgent 模拟报文实测 `posted done ok`; 13:29:16 网关日志
       `push ack [agent]: agy 任务完成` 真机播报+ACK, pending 清空。
     - 约束: 以后改 hooks.json 顶层命名空间**严禁改成 "fusion"**, 必须用 "stackchan"。
+- ⚠️ **本条目两个"死穴"结论已被 #16 推翻**（2026-08-07 15:46）: ①顶层命名空间
+  （stackchan/promlight）根本不是合法结构, 会导致语言服务器整文件解析失败;
+  ②"IDE 实际上报 AfterAgent/agent.stop" 不成立——桌面版语言服务器支持的是
+  PreToolUse/PostToolUse/Stop 等事件名, AfterAgent 是 Gemini CLI 的事件名。
 15. **LED 灯环常亮橙色、不随状态变化（2026-08-07 根治, 防复发）**:
     - 真根因: PY32 **GPIO13 未配输出推挽**, 灯环数据线无法驱动——
       对照出厂固件 hal_io_expander 初始化序列补齐（0x04/0x0A/0x0C/0x14 bit5）。
@@ -141,6 +146,22 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
     - 真机: 播报变绿、结束回暖橙, 无 I2C 报错。聆听蓝待唤醒验证。
     - Prompt 保固: 阿松 v3.6 严禁 LLM 调 `self.led.*` 表达情绪，用户明确要求时
       必须同轮 `self.led.auto` 恢复。LED 颜色永远归固件状态机。
+16. **Antigravity hooks 命名空间结构整体失效（2026-08-07 15:46 根治, 推翻 #14）**:
+    - 现象: 15:22 Antigravity 桌面崩溃重启后, hook 事件全部不再到达 antigravity_hook.py,
+      结论不进队列、机器人不播报（hook 日志最后写入 13:29, transcript 却活动到 15:23）。
+    - 铁证: `%APPDATA%\Antigravity\logs\language_server.log` 15:23:27:
+      `hooks.go:44 Failed to parse hooks file ~/.gemini/config/hooks.json:
+      invalid hook "stackchan": command hook must specify 'command'`
+      —— 顶层命名空间（stackchan/promlight）结构导致**整文件解析失败、全部事件被丢弃**。
+    - 真相: Antigravity 桌面版语言服务器只认**标准 Gemini hooks 结构**:
+      `{"hooks": {"<事件>": [{"matcher": ".*", "hooks": [{"type": "command",
+      "command": "..."}]}]}}`; 支持事件名（从 language_server.exe 二进制确认）:
+      SessionStart / PreToolUse / PostToolUse / PermissionRequest / PermissionDenied /
+      Elicitation / Stop / SessionEnd / Notification。
+    - 修复: `~/.gemini/config/hooks.json` 重写为标准结构（7 事件, matcher ".*",
+      无 timeout; promlight 段移除, 备份 `hooks.json.bak-20260807-hooksgo`）。
+    - 防复发: **严禁再改回命名空间结构**; 改完 hooks.json 必须重启 Antigravity 桌面版,
+      并确认 language_server.log 无 "Failed to parse hooks file"。
 9. **claude/pi 可见窗口工作目录**: 从用户主目录改为项目目录 `<PROJECT_ROOT>`
    （与 codex/agy 一致, 「总结当前项目」才有上下文）。
 10. **托盘队列操作菜单**: 新增「队列操作」子菜单——显示队列消息内容 / 清空队列
@@ -170,6 +191,10 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
       Phase 8.2 `robot_snap` 拍照 MCP（连拍 3/3）; Claude hooks 迁移
       `settings.local.json`（五工单: 抗 ccswitch 覆盖 / VS Code 拒发 / 空摘要兜底 /
       codex hooks 清 PromLight 僵尸）; 本地存档 `version.08.07/` + GitHub 同步。
+- [x] 2026-08-07 晚 v08.09: 网关两轨吞字修复（MQTT 2帧/批 < MTU + LLM ≤60 字摘要,
+      真机 ACK 50 字摘要）; Claude hooks 迁移 settings.json（#64699, 安装脚本 5.1 兼容）;
+      托盘「安装/修复 Claude Hooks」自愈菜单; config local_llm_model→qwen3.5:9b;
+      本地存档 version.08.09/ + GitHub 脱敏同步。
 - [ ] **Pending · 长播报时断时续/吞字**: 用户反馈长语音播报仍时断时续（v1.0.6 缓冲加大
       后未根治）。排查线索: ①多段 TTS 时 `kDeviceStateSpeaking` 每次进入都调
       `ResetDecoder()` 清解码/播放队列; ②服务器突发推送导致欠载; ③WS 断流。
@@ -207,3 +232,6 @@ python -m esptool --chip esp32s3 -b 460800 --port COM8 --before default-reset --
 - 提示词: `<PROJECT_DIR>/prompt-阿松-v3.md`
 - 发布副本: `<GITHUB_REPO_DIR>`（stackchan-fusion-github）
 - 07.31 备份包: `<PROJECT_DIR>/package-stackchan.zip.0731-backup`
+
+
+

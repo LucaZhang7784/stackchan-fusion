@@ -105,7 +105,7 @@ powershell -ExecutionPolicy Bypass -File gateway/install_autostart.ps1
 | agy / Antigravity | `~/.gemini/config/hooks.json` 的 `fusion` 段指向 `agents/antigravity_hook.py` |
 | pi | `~/.pi/agent/settings.json` 注册 `extensions/hooks-bridge.ts`（把文件放进 `~/.pi/agent/extensions/`） |
 
-> 所有 hook 脚本里的路径如 `D:\ProcessCenter\StackChan\...` 需改成你机器上的实际路径。
+> 所有 hook 脚本里的路径如 `<PROJECT_ROOT>\...` 需改成你机器上的实际路径。
 
 ## 3. 验证
 

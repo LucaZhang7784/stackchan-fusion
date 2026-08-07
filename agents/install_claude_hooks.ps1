@@ -1,15 +1,18 @@
 $ErrorActionPreference = "Stop"
 
-# Claude Code 全局配置路径
-$settingsPath = Join-Path $env:USERPROFILE ".claude\settings.json"
+# Claude Code 用户级配置路径: 用 settings.local.json 而非 settings.json。
+# 原因: ccswitch 每次切模型会用"仅 env"的 JSON 全量覆盖 settings.json(抹掉 hooks 段);
+# Claude Code 会合并 settings.local.json(优先级更高), 放在这里可根治反复覆盖。
+$settingsPath = Join-Path $env:USERPROFILE ".claude\settings.local.json"
 
 # 完整 Python 路径(与审计修正后的 ~/.claude/settings.json 一致, 不依赖 PATH 里的 python)
-$python = "C:\Users\zhang.luca\AppData\Local\Programs\Python\Python311\python.exe"
+# Python 路径不硬编码用户名: 从 LOCALAPPDATA 解析, 找不到再回退 PATH
+$python = Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"
 if (-not (Test-Path $python)) {
     $python = (Get-Command python -ErrorAction SilentlyContinue).Source
     if (-not $python) { throw "找不到 Python, 请先安装并配置 Python311" }
 }
-$hookScript = "D:\ProcessCenter\StackChan\fusion.firmware.0731\agents\claude_hook.py"
+$hookScript = Join-Path $PSScriptRoot "claude_hook.py"
 # 命令用正斜杠: Claude Code 在 Windows 上经 /usr/bin/bash 执行 hook,
 # 反斜杠会被 bash 吃掉(实测报 command not found), 正斜杠在 cmd/bash 下都兼容。
 $hookCmd = "`"" + ($python -replace '\\', '/') + "`" `"" + ($hookScript -replace '\\', '/') + "`""
@@ -50,3 +53,7 @@ if (Test-Path $settingsPath) { Copy-Item $settingsPath $backup }
 $settings | ConvertTo-Json -Depth 8 | Set-Content $settingsPath -Encoding UTF8
 Write-Host "hooks installed -> $settingsPath (backup: $backup)"
 Write-Host "结构: Stop/SessionEnd/Notification/PermissionRequest 各含 matcher+hooks[] (claude_hook.py)"
+Write-Host ""
+Write-Host "[自愈保障] hooks 已写入 settings.local.json(用户级, 优先级高于 settings.json)。"
+Write-Host "ccswitch 切模型时只覆盖 settings.json(仅 env 段), 不会影响 settings.local.json 里的 hooks。"
+Write-Host "若发现 hooks 丢失: 重跑本脚本即可恢复, 或加计划任务定时调用。"

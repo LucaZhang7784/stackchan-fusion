@@ -31,7 +31,7 @@
 ## 刷机（app-only，保留配置）
 
 ```powershell
-cd D:\ProcessCenter\StackChan\fusion.firmware.0731\firmware\post-fw-v1.0.3-aec-wake
+cd <PROJECT_DIR>\firmware\post-fw-v1.0.3-aec-wake
 python -m esptool --chip esp32s3 -b 460800 --port COM8 `
   --before default-reset --after hard-reset write-flash 0x410000 xiaozhi.bin
 ```

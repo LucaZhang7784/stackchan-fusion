@@ -5,8 +5,8 @@
 只靠工具描述(description)有时不够, 加一条系统提示最稳妥。
 
 ## 步骤
-1. 把容器内的默认提示词复制到 data 目录(主机路径 `D:\ProcessCenter\StackChan\server\data`):
-   docker cp xiaozhi-esp32-server:/opt/xiaozhi-esp32-server/agent-base-prompt.txt D:\ProcessCenter\StackChan\server\data\.agent-base-prompt.txt
+1. 把容器内的默认提示词复制到 data 目录(主机路径 `<PROJECT_ROOT>\server\data`):
+   docker cp xiaozhi-esp32-server:/opt/xiaozhi-esp32-server/agent-base-prompt.txt <PROJECT_ROOT>\server\data\.agent-base-prompt.txt
 2. 编辑 `data\.agent-base-prompt.txt`, 在 <context> 内追加:
 
 ```
@@ -19,4 +19,4 @@
 
 3. 在 `data\.config.yaml` 增加一行(若没有 prompt_template):
    prompt_template: data/.agent-base-prompt.txt
-4. 重启容器: docker compose -f D:\ProcessCenter\StackChan\server\docker-compose.yml restart xiaozhi-esp32-server
+4. 重启容器: docker compose -f <PROJECT_ROOT>\server\docker-compose.yml restart xiaozhi-esp32-server

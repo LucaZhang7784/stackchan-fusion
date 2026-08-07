@@ -1,7 +1,7 @@
-﻿# 部署融合推送补丁: /api/push (服务器 TTS 直推设备) + SERVER_MCP 注册
+# 部署融合推送补丁: /api/push (服务器 TTS 直推设备) + SERVER_MCP 注册
 # 用法: powershell -ExecutionPolicy Bypass -File deploy_fusion_push.ps1
 param(
-  [string]$StackChanRoot = 'D:\ProcessCenter\StackChan'
+  [string]$StackChanRoot = '<PROJECT_ROOT>'
 )
 $ErrorActionPreference = 'Stop'
 $fusion = Join-Path $StackChanRoot 'fusion.firmware.0731'

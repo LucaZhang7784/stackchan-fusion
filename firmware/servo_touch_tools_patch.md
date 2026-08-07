@@ -1,6 +1,6 @@
 # 机器人能力补丁：舵机动作 MCP 工具 (self.servo.*) — 基于 hylarucoder/StackChan 参考
 
-适用固件: D:\ProcessCenter\StackChan\merge-v226 (xiaozhi-esp32 2.2.6 + m5stack-core-s3 板)
+适用固件: <PROJECT_ROOT>\merge-v226 (xiaozhi-esp32 2.2.6 + m5stack-core-s3 板)
 
 ## 现状 (merge-v226 板代码 m5stack_core_s3.cc 已具备)
 
@@ -55,8 +55,8 @@
 
 ## 编译烧录 (OUTPUT.md 命令)
 
-cd D:\ProcessCenter\StackChan\merge-v226
-docker run --rm -v "//d/ProcessCenter/StackChan/merge-v226:/project" -w //project ^
+cd <PROJECT_ROOT>\merge-v226
+docker run --rm -v "//d/<PROJECT_ROOT>/merge-v226:/project" -w //project ^
   espressif/idf:v5.5.2 bash -c "idf.py set-target esp32s3 && idf.py build"
 python -m esptool --chip esp32s3 --port COM8 erase-flash
 python -m esptool --chip esp32s3 -b 460800 --port COM8 --before default-reset --after hard-reset ^

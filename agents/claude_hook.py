@@ -78,21 +78,40 @@ def _summary_from_transcript(transcript: list) -> str:
 
 
 def _summary_from_transcript_path(tp) -> str:
-    """Claude Code 部分环境把 transcript 放文件里, 兜底读取最后一条 assistant 文本。"""
+    """Claude Code 会话 JSONL 兜底: 每行 {type, message:{role, content}} 或 {type:assistant, message:{content}},
+    取最后一条 assistant 的 text 内容(含中断流的部分响应)。"""
     if not tp:
         return ""
     try:
-        lines = Path(tp).read_text(encoding="utf-8", errors="replace").splitlines()[-300:]
+        lines = Path(tp).read_text(encoding="utf-8", errors="replace").splitlines()[-400:]
         for line in reversed(lines):
             try:
                 o = json.loads(line)
             except Exception:
                 continue
-            msgs = o.get("transcript")
-            if isinstance(msgs, list):
-                s = _summary_from_transcript(msgs)
-                if s:
-                    return s
+            if not isinstance(o, dict):
+                continue
+            msg = o.get("message")
+            role = o.get("type")
+            if isinstance(msg, dict):
+                role = msg.get("role") or role
+                content = msg.get("content")
+            else:
+                content = None
+            if role != "assistant":
+                continue
+            if isinstance(content, str) and content.strip():
+                return " ".join(content.split())[:400]
+            if isinstance(content, list):
+                parts = []
+                for p in content:
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        t = str(p.get("text") or "").strip()
+                        if t:
+                            parts.append(t)
+                joined = " ".join(parts).strip()
+                if joined:
+                    return joined[:400]
     except Exception:
         pass
     return ""
@@ -154,7 +173,7 @@ if __name__ == "__main__":
         if not _recently_done(msg_uid):
             summary = _summary_from_transcript(data.get("transcript", [])) or _summary_from_transcript_path(data.get("transcript_path") or data.get("transcriptPath") or "")
             if not summary:
-                summary = "任务已结束(无文本输出)"
+                summary = "Claude 会话结束(响应可能中断, 详见电脑)"
             _post("done", summary, session_id, msg_uid)
     elif hook == "Notification":
         msg = data.get("message", "")

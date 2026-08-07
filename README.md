@@ -3,6 +3,10 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.07（2026-08-07）：Phase 8 动作联动（done→点头 / question→歪头）+ CoreS3 视觉
+> `robot_snap` 拍照 MCP（12 工具）+ Claude hooks 迁移 `settings.local.json` 抗覆盖 +
+> VS Code 语音派发拒发 + Claude 流式中断兜底。
+
 > 核心思路（2026-08-06 收尾）：**云链路 + MQTT 主动播报**。机器人走 xiaozhi.me 云端智能体，
 > agent 事件经网关 FIFO 队列 → EdgeTTS(粤语) → µ-law → EMQX MQTT 直推固件播报，
 > **msg_uid 全链路幂等 + 固件 ACK 点杀**（播报不重不漏）；任务在 agent 自己的可见窗口执行，
@@ -18,7 +22,7 @@ xiaozhi.me 云智能体 (STACK, 提示词见 prompt-阿松-v3.md)
    │ MCP (wss://api.xiaozhi.me/mcp)
    ▼
 xiaozhi-mcp 云桥接 (mcp_pipe.py + server.py, 本机)
-   │ agent_status / agent_query / agent_pending / agent_confirm / agent_result_check ...
+   │ agent_status / agent_query / agent_pending / agent_confirm / agent_result_check / robot_snap ...
    ▼
 融合网关 fusion_gateway.py (:8010, Bearer 认证)
    │
@@ -83,10 +87,10 @@ python scripts\verify_connectivity.py
 | Agent | 接入方式 | 主动上报 | 语音回写确认 |
 |---|---|---|---|
 | codex | `~/.codex/hooks.json` → `agents/codex_hook.py`；`config.toml` `bypass_hook_trust=true`、`[windows] sandbox='unelevated'` | ✅ 桌面+CLI | ❌（在 codex 界面确认） |
-| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`；可见窗口经 `agents/claude_visible_run.py` 上报完成；`agents/confirm_mcp.py` | ✅ | ✅ 完整回环 |
+| claude | `~/.claude/settings.local.json` hooks → `agents/claude_hook.py`（local 优先、ccswitch 切模型不覆盖）；可见窗口经 `agents/claude_visible_run.py` 上报完成；`agents/confirm_mcp.py` | ✅ | ✅ 完整回环 |
 | agy / Antigravity | `~/.gemini/config/hooks.json` `fusion` 段 → `agents/antigravity_hook.py` | ✅ CLI 归属 agent=agy | ❌ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → 网关 | ✅ | ❌ |
-| vscode | `agents/vscode_hook.py`，任务/终端结束上报 done；`AGENT_CLIS` 已注册 | ✅ | ❌ |
+| vscode | `agents/vscode_hook.py`，任务/终端结束上报 done；`AGENT_CLIS` 已注册；语音派发**已拒发**（防 `code -r` 误开文件） | ✅ | ❌ |
 
 任务执行方式：`agent_query` 打开 agent 自己的可见控制台窗口（标题 `Codex-Asong` /
 `ClaudeCode-Asong` / `Antigravity-Asong` / `pi-Asong`，脚本存于 `gateway/state/visible_runs/`），
@@ -106,6 +110,10 @@ python scripts\verify_connectivity.py
   AP 隔离时自动降级）；MQTT buffer 8KB、poll 读超时 5s、**keepalive 15s**；
   lwIP TCP 收窗口 16KB（µ-law 16KB/s 有余量）；播报期间关 WiFi 节能，播完恢复；
   打断后待播放队列排空自然切回待机。
+- **Phase 8.1 动作联动**：收到 `done/error` → 点头；`question` → 歪头 +15°；
+  待机闲逛摆头 20s 一次。
+- **Phase 8.2 拍照**：`robot_snap` → 固件拍 JPEG 分块（`stackchan/{mac}/photo`, QoS1）
+  → 网关重组校验。
 - v1.0.6/1.0.5/1.0.4 历史版本见下方版本记录。
 - 升级：app-only 刷 `xiaozhi.bin @ 0x410000`，保留配置；构建 espressif/idf:v5.5.2
   （5.5.4 会黑屏）。
@@ -114,7 +122,7 @@ python scripts\verify_connectivity.py
 
 | 服务 | 端口 | 说明 |
 |---|---|---|
-| 融合网关 | 8010 | 11 个 MCP 工具，Bearer 认证；单 Worker 推送 FIFO + msg_uid 幂等 |
+| 融合网关 | 8010 | 12 个 MCP 工具（含 robot_snap），Bearer 认证；单 Worker 推送 FIFO + msg_uid 幂等 |
 | xiaozhi-mcp 云桥接 | — | mcp_pipe.py + server.py，心跳 60s |
 | EMQX 公共 broker | 1883 | 播报推送（broker-cn.emqx.io，QoS0 + 固件 ACK 确认） |
 | Codex↔机器人桥接 | — | `bridge/stackchan_mcp.js`（MCP stdio：check_task / respond） |
@@ -134,6 +142,11 @@ python scripts\verify_connectivity.py
 | 托盘两个图标 | `fusion_tray.ps1` 单实例保护（已修复） |
 | 机器人不播报 | 网关日志看 `push ack`/`push no-ack`：ack=已送达；no-ack=机器人 push MQTT 离线，
   消息保留 pending 兜底自动重试；config.json 损坏会 Fail-Fast 拒启 |
+| Claude 任务不播报 / hooks 丢失 | 检查 `~/.claude/settings.local.json` 是否含四钩子
+  （ccswitch 切模型会全量覆盖 settings.json 的 env 段，local 文件不受影响；丢失时重跑
+  `agents/install_claude_hooks.ps1` 自愈） |
+| 对机器人说「让 vscode 做…」 | 网关返回 "VS Code 暂不支持语音派发任务"——请手动在
+  VS Code 运行任务，结束经 `vscode_hook.py` 自动播报（防 `code -r` 误开文件） |
 | 播报卡顿/无声 | 确认固件 v1.2-mqttpush（µ-law + 16KB 窗口）；网关日志 `push ok` 后无 ack
   说明机器人 push MQTT 掉线（keepalive 15s 已加固） |
 
@@ -146,8 +159,25 @@ python scripts\verify_connectivity.py
 - 确认回环仅 claude 完整（`--permission-prompt-tool` + `confirm_mcp`）；
   codex/agy/pi 只上报「需要确认」，回写需在 agent 界面完成。
 - 语音端到端延迟约 1.5–2.5s（云端 ASR/LLM/TTS 所致），非打断式播报可接受。
+- VS Code 语音派发不支持（已拒发防退化）；拍照依赖机器人联网且 push MQTT 在线。
 
 ## 版本记录
+
+### v08.07（2026-08-07）
+
+- **Phase 8.1 动作联动**：固件 `done/error` → 点头 Nod、`question` → 歪头 TiltAsk(+15°)；
+  待机摆头 4s → 20s（`kIdleScanIntervalUs` 统一，真机确认）。
+- **Phase 8.2 视觉 MCP**：网关 `robot_snap`（12 工具）；固件拍照 JPEG 分块 MQTT
+  （`stackchan/{mac}/photo` QoS1）→ 网关重组校验 JPEG 魔数+总长度；连拍 3/3 有效。
+- **Claude hooks 抗覆盖**：`install_claude_hooks.ps1` 改写 `~/.claude/settings.local.json`
+  （ccswitch 全量覆盖 settings.json 时不再抹掉 hooks），四钩子注入 + 自愈提示。
+- **VS Code 拒发**：`agents_core.query()` 对 vscode 显式拒发语音派发任务
+  （杜绝 `code -r <task>` 误开文件），手动任务 + `vscode_hook.py` 自动播报。
+- **Claude 流式中断兜底**：`claude_hook.py` 摘要为空时强制上报
+  "Claude 会话结束(响应可能中断, 详见电脑)"，不再静默丢事件。
+- **codex hooks 清理**：`~/.codex/hooks.json` 移除 15 条 PromLight 僵尸钩子
+  （备份 `hooks.json.bak-20260807-110621`），仅保留 codex_hook 5 大事件。
+- **脱敏加固**：公开副本移除 Tailscale IP `<TAILSCALE_IP>` 与真实本地路径。
 
 ### v08.06（2026-08-06 收尾）
 

@@ -1,5 +1,5 @@
 # 融合补丁覆盖挂载 (与 server/docker-compose.yml 一起使用)
-#   docker compose -f D:\ProcessCenter\StackChan\server\docker-compose.yml ^
+#   docker compose -f <PROJECT_ROOT>\server\docker-compose.yml ^
 #                  -f <PROJECT_DIR>\server-patch\docker-compose.fusion.yml ^
 #                  up -d xiaozhi-esp32-server
 services:

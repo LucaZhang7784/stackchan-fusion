@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "SilentlyContinue"
+$ErrorActionPreference = "SilentlyContinue"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -17,7 +17,7 @@ try {
 } catch { }
 if (-not $authToken) { $authToken = 'YOUR_GATEWAY_TOKEN' }
 
-$bridgeErr = 'D:\ProcessCenter\StackChan\fusion.firmware.0731\xiaozhi-mcp\bridge.err'
+$bridgeErr = '<PROJECT_DIR>\xiaozhi-mcp\bridge.err'
 $eventsFile = Join-Path $root 'data\agent_events.jsonl'
 $confirmFile = Join-Path $root 'data\agent_confirmations.json'
 
@@ -273,7 +273,7 @@ function Restore-BridgeIfDown {
     if (((Get-Date) - $script:lastBridgeRestartAt).TotalSeconds -lt 30) { return }
     $script:lastBridgeRestartAt = Get-Date
     try {
-        $run = 'D:\ProcessCenter\StackChan\fusion.firmware.0731\xiaozhi-mcp\run_bridge.ps1'
+        $run = '<PROJECT_DIR>\xiaozhi-mcp\run_bridge.ps1'
         Start-Process -FilePath 'powershell.exe' `
             -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$run`"") `
             -WindowStyle Hidden | Out-Null

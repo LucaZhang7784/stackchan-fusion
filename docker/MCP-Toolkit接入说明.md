@@ -15,7 +15,7 @@
 3. 已连接的客户端（全局/项目）：
    - Codex（全局）：`.codex/config.toml` → `[mcp_servers.MCP_DOCKER]`
    - Claude Code（全局）：`~/.claude.json` → `MCP_DOCKER`
-   - VS Code（项目）：`D:\ProcessCenter\StackChan\.vscode\mcp.json`
+   - VS Code（项目）：`<PROJECT_ROOT>\.vscode\mcp.json`
 4. 环境变量已持久化（用户级）：
    - `DOCKER_MCP_ALLOW_INSECURE_REMOTE_URLS=1`
    - 作用：允许 gateway 通过 http 连接本地 fusion-gateway（Toolkit 默认强制 https）

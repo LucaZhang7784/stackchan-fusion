@@ -6,6 +6,10 @@
 > v08.08（2026-08-07 午后）：LED 灯环根治（PY32 GPIO13 出厂序列 + led_manual_ 待机锁 +
 > I2C 互斥；真机播报绿→待机暖橙）+ Antigravity 播报修复（hooks 命名空间 `stackchan` +
 > AfterAgent/agent.stop 事件别名）+ Prompt v3.6（灯色归固件）+ 固件 v1.2-mqttpush 重建。
+> v08.09（2026-08-07 晚）：Claude hooks Windows 失效根治（settings.local.json → settings.json，
+> 规避 anthropics/claude-code#64699）+ 安装脚本 PowerShell 5.1 兼容重写 + 托盘
+> 「安装/修复 Claude Hooks」一键自愈菜单 + 网关两轨修复（MQTT 2帧/批根治 TCP 分片丢包吞字 +
+> LLM ≤60 字口语化摘要）。
 > v08.07（2026-08-07）：Phase 8 动作联动（done→点头 / question→歪头）+ CoreS3 视觉
 > `robot_snap` 拍照 MCP（12 工具）+ Claude hooks 迁移 `settings.local.json` 抗覆盖 +
 > VS Code 语音派发拒发 + Claude 流式中断兜底。
@@ -50,7 +54,7 @@ xiaozhi-mcp 云桥接 (mcp_pipe.py + server.py, 本机)
 
 | 能力 | 说明 |
 |---|---|
-| 主动播报 | agent 完成/出错/需确认 → 网关立即推送（150 字口语摘要），msg_uid + ACK 点杀不重不漏 |
+| 主动播报 | agent 完成/出错/需确认 → 网关立即推送（≤60 字 LLM 口语化摘要，长文本 LLM 提炼、失败降级截断），msg_uid + ACK 点杀不重不漏 |
 | 唤醒补播 | 机器人离线时消息保留 pending 队列，唤醒后 `agent_pending` 补播 |
 | 状态查询 | 「检查 XX 状态」→ `agent_status`（4 个 agent 可用性/进程/最近事件，<5s） |
 | 任务执行 | 「让 XX 做…」→ `agent_query`，在 agent 自己的可见窗口执行，结果回流播报 |
@@ -90,7 +94,7 @@ python scripts\verify_connectivity.py
 | Agent | 接入方式 | 主动上报 | 语音回写确认 |
 |---|---|---|---|
 | codex | `~/.codex/hooks.json` → `agents/codex_hook.py`；`config.toml` `bypass_hook_trust=true`、`[windows] sandbox='unelevated'` | ✅ 桌面+CLI | ❌（在 codex 界面确认） |
-| claude | `~/.claude/settings.local.json` hooks → `agents/claude_hook.py`（local 优先、ccswitch 切模型不覆盖）；可见窗口经 `agents/claude_visible_run.py` 上报完成；`agents/confirm_mcp.py` | ✅ | ✅ 完整回环 |
+| claude | `~/.claude/settings.json` hooks → `agents/claude_hook.py`（v08.09 起主存 settings.json——Windows 2.1.x 的 settings.local.json 有 #64699 静默失效 BUG；ccswitch 覆盖后托盘「安装/修复 Claude Hooks」一键自愈）；可见窗口经 `agents/claude_visible_run.py` 上报完成；`agents/confirm_mcp.py` | ✅ | ✅ 完整回环 |
 | agy / Antigravity | `~/.gemini/config/hooks.json` `stackchan` 段 → `agents/antigravity_hook.py` | ✅ CLI 归属 agent=agy | ❌ |
 | pi | `~/.pi/agent/extensions/hooks-bridge.ts` → 网关 | ✅ | ❌ |
 | vscode | `agents/vscode_hook.py`，任务/终端结束上报 done；`AGENT_CLIS` 已注册；语音派发**已拒发**（防 `code -r` 误开文件） | ✅ | ❌ |
@@ -127,12 +131,12 @@ python scripts\verify_connectivity.py
 
 | 服务 | 端口 | 说明 |
 |---|---|---|
-| 融合网关 | 8010 | 12 个 MCP 工具（含 robot_snap），Bearer 认证；单 Worker 推送 FIFO + msg_uid 幂等 |
+| 融合网关 | 8010 | 13 个 MCP 工具（含 robot_snap / local_query），Bearer 认证；单 Worker 推送 FIFO + msg_uid 幂等 |
 | xiaozhi-mcp 云桥接 | — | mcp_pipe.py + server.py，心跳 60s |
 | EMQX 公共 broker | 1883 | 播报推送（broker-cn.emqx.io，QoS0 + 固件 ACK 确认） |
 | Codex↔机器人桥接 | — | `bridge/stackchan_mcp.js`（MCP stdio：check_task / respond） |
 | xiaozhi-esp32-server (Docker) | — | **已停用**（云链路不依赖） |
-| 系统托盘 | — | 状态监视 + 网关守护（单实例保护）+ 队列操作菜单（查看/清空） |
+| 系统托盘 | — | 状态监视 + 网关守护（单实例保护）+ 队列操作菜单（查看/清空）+「安装/修复 Claude Hooks」自愈菜单 |
 
 守护与计划任务全部经 `wscript.exe` + VBS 隐藏启动（无弹窗），`install_autostart.ps1` 一键注册。
 
@@ -147,9 +151,10 @@ python scripts\verify_connectivity.py
 | 托盘两个图标 | `fusion_tray.ps1` 单实例保护（已修复） |
 | 机器人不播报 | 网关日志看 `push ack`/`push no-ack`：ack=已送达；no-ack=机器人 push MQTT 离线，
   消息保留 pending 兜底自动重试；config.json 损坏会 Fail-Fast 拒启 |
-| Claude 任务不播报 / hooks 丢失 | 检查 `~/.claude/settings.local.json` 是否含四钩子
-  （ccswitch 切模型会全量覆盖 settings.json 的 env 段，local 文件不受影响；丢失时重跑
-  `agents/install_claude_hooks.ps1` 自愈） |
+| Claude 任务不播报 / hooks 丢失 | 检查 `~/.claude/settings.json` 是否含四钩子（v08.09 起主存
+  settings.json：Windows 2.1.x 的 settings.local.json 有 #64699 静默失效 BUG，升级后 hooks
+  会彻底不触发）；丢失时右键托盘「安装/修复 Claude Hooks」或重跑
+  `agents/install_claude_hooks.ps1` 自愈 |
 | 对机器人说「让 vscode 做…」 | 网关返回 "VS Code 暂不支持语音派发任务"——请手动在
   VS Code 运行任务，结束经 `vscode_hook.py` 自动播报（防 `code -r` 误开文件） |
 | 播报卡顿/无声 | 确认固件 v1.2-mqttpush（µ-law + 16KB 窗口）；网关日志 `push ok` 后无 ack
@@ -167,6 +172,22 @@ python scripts\verify_connectivity.py
 - VS Code 语音派发不支持（已拒发防退化）；拍照依赖机器人联网且 push MQTT 在线。
 
 ## 版本记录
+
+### v08.09（2026-08-07 晚）
+
+- **Claude hooks Windows 失效根治**：2.1.224 升级后 settings.local.json hooks 静默失效
+  （命中 anthropics/claude-code#64699，重启/回滚均无法恢复）→ hooks 主存迁移到
+  ~/.claude/settings.json，真机验证 Stop/SessionEnd 正常触发、机器人 ACK 播报；
+  56b9df49 会话完成消息补播成功（17:59 真机 ACK）。
+- **install_claude_hooks.ps1 重写**：UTF-8 BOM + PowerShell 5.1/7 双兼容
+  （严禁 ConvertFrom-Json -AsHashtable——5.1 会抛错并被 catch 吞掉、清空 env 段）；
+  幂等合并写入 settings.json，保留 env/permissions；ccswitch 覆盖后重跑即自愈。
+- **托盘新增「安装/修复 Claude Hooks」**：右键一键重跑安装脚本（usion_tray.ps1）。
+- **网关两轨修复（吞字根治）**：轨一 _PUSH_BATCH_FRAMES 8→2（每批 ~1.9KB < MTU，
+  根治 TCP 分片导致固件丢帧）；轨二 _summarize_for_speech（>60 字经本地 LLM 提炼
+  ≤60 字口语化摘要，失败降级截断）+ _prewarm_local_llm 启动预热。
+- **config 修正**：local_llm_model qwen3:8b（已删除）→ qwen3.5:9b；push 日志改记实际播报文本。
+- 验收：221 字长文本 → 机器人 ACK 播报 50 字 LLM 摘要（18:23:54）；网关 13 工具。
 
 ### v08.08（2026-08-07 午后）
 

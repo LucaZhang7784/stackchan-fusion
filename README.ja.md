@@ -1,5 +1,9 @@
 # StackChan 融合ソリューション
 
+> **v08.09（2026-08-07）:** Claude hooks Windows 修正（settings.local.json → settings.json、
+> anthropics/claude-code#64699 を回避）、インストーラーを PowerShell 5.1 対応に書き直し、
+> トレイ「Install/Repair Claude Hooks」メニュー、ゲートウェイ 2 本立て修正
+> （TCP フラグメンテーション回避の 2 フレーム/バッチ + LLM ≤60 字口語要約）。
 > **v08.08（2026-08-07）:** LED リング根本修正（PY32 GPIO13 初期化 + 待機ロック + I2C ミューテックス；
 > 再生=緑 → 待機=暖オレンジを実機確認）、Antigravity 読み上げ修正（hooks 名前空間 `stackchan` +
 > AfterAgent/agent.stop エイリアス）、Prompt v3.6（LED はファームウェア管理）、

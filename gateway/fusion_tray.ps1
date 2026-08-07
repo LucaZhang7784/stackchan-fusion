@@ -1,4 +1,4 @@
-$ErrorActionPreference = "SilentlyContinue"
+﻿$ErrorActionPreference = "SilentlyContinue"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -458,6 +458,26 @@ function Build-Menu {
         [System.Windows.Forms.MessageBox]::Show($script:detail, 'StackChan Fusion 状态', 'OK', 'Information') | Out-Null
     })
     $script:menu.Items.Add($itemDetail) | Out-Null
+
+    # Claude hooks 自愈: 一键重跑 install_claude_hooks.ps1(hooks 主存 settings.json; ccswitch 切模型覆盖后需重装)
+    $itemInstallHooks = New-Object System.Windows.Forms.ToolStripMenuItem
+    $itemInstallHooks.Text = '安装/修复 Claude Hooks'
+    $itemInstallHooks.Add_Click({
+        $installScript = Join-Path (Split-Path -Parent $root) 'agents\install_claude_hooks.ps1'
+        if (-not (Test-Path -LiteralPath $installScript)) {
+            [System.Windows.Forms.MessageBox]::Show("未找到安装脚本:`n$installScript", 'Claude Hooks', 'OK', 'Error') | Out-Null
+            return
+        }
+        try {
+            $hookOut = & $installScript 2>&1 | Out-String
+            [System.Windows.Forms.MessageBox]::Show(
+                "Claude hooks 已写入 settings.json。`n`n$($hookOut.Trim())`n`n提示: 若当前有正在运行的 Claude 会话, 请重启该会话以加载 hooks。",
+                'Claude Hooks', 'OK', 'Information') | Out-Null
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("执行失败: $($_.Exception.Message)", 'Claude Hooks', 'OK', 'Error') | Out-Null
+        }
+    })
+    $script:menu.Items.Add($itemInstallHooks) | Out-Null
 
     $itemRestart = New-Object System.Windows.Forms.ToolStripMenuItem
     $itemRestart.Text = '重启网关'

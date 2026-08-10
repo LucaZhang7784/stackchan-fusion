@@ -3,6 +3,8 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.10（2026-08-10）：播报规则 ≤50 字完整 / 超长 LLM 摘要 ≤50 字 + 语速归 1.0x +
+> 推送 QoS0→QoS1（公网丢帧吞字根治）；Trae 桌面端 hooks 接入研究（原生引擎，免企业账号）。
 > v08.08（2026-08-07 午后）：LED 灯环根治（PY32 GPIO13 出厂序列 + led_manual_ 待机锁 +
 > I2C 互斥；真机播报绿→待机暖橙）+ Antigravity 播报修复（hooks 命名空间 `stackchan` +
 > AfterAgent/agent.stop 事件别名）+ Prompt v3.6（灯色归固件）+ 固件 v1.2-mqttpush 重建。
@@ -173,6 +175,19 @@ python scripts\verify_connectivity.py
 
 ## 版本记录
 
+### v08.10（2026-08-10）
+
+- **播报规则**：≤50 字完整播报；>50 字本地 LLM 口语化摘要 ≤50 字（失败降级截断），
+  先清洗原文不预截断，摘要器拿到完整原文。
+- **语速 1.0x**：EdgeTTS `push_tts_rate` +20% → +0%；sherpa 兜底 `tts_fallback_speed`
+  1.1 → 1.0。
+- **QoS1 投递（吞字根治）**：START / 音频批 / STOP 全部改 QoS1；固件订阅本为 QoS1，
+  公网 EMQX 丢包/断连时 broker 重投，消灭 QoS0 静默丢帧导致的播报吞字。
+- **Trae 桌面端接入研究**：桌面端原生内置 TraeCode hooks 引擎（无需企业账号），
+  全局 hooks 路径 `%USERPROFILE%/.trae-cn/hooks.json`，方案见
+  docs/trae-work-integration-feasibility-20260807.md（待实施）。
+- 排查记录：云链路 ASR 语种基准确认（xiaozhi.me 云端设置；selfhost language_hints 注释态）。
+
 ### v08.09（2026-08-07 晚）
 
 - **Claude hooks Windows 失效根治**：2.1.224 升级后 settings.local.json hooks 静默失效
@@ -301,4 +316,3 @@ python scripts\verify_connectivity.py
 （`YOUR_*` / `AA:BB:CC:DD:EE:FF`）。真实值只存在于本机 `.env`、`config.json`、
 docker 配置。`.gitignore` 已忽略所有运行时敏感文件。
 部署时按 [DEPLOY.md](DEPLOY.md) 第 4 节逐项替换。
-

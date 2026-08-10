@@ -270,6 +270,8 @@ AGENT_CLIS: dict = {
     "pi": {"cli": "pi", "exec_args": ["--print", "--no-session", "--no-context-files"],
            "version_args": ["--version"], "workdir": str(Path.home())},
     "vscode": {"cli": "code", "exec_args": ["-r"], "version_args": ["--version"], "workdir": str(ROOT)},
+    # system: 仅网关自检告警使用(agent_event 白名单), 无 CLI 派发
+    "system": {"cli": "system", "exec_args": [], "version_args": [], "workdir": str(ROOT)},
 }
 
 # 别名归一化: ASR 可能听成同音词/中英混说, 统一映射到标准 agent 名。

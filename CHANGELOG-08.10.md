@@ -28,3 +28,22 @@
   （product.json `dataFolderName = .trae-cn`）。
 - 方案：trae_hook.py（done / question / progress 回流）+ hooks.json + 网关 trae 注册；
   待批准实施。
+
+## v08.10 修订（2026-08-10 晚）
+
+- **摘要保留完整结论**：`_summarize_for_speech` 提示词强制"必须包含完整结论"
+  （根因/结果/决定），可省略过程细节；LLM 不可用/超时降级从头部硬截断改为
+  **尾部结论句提取**（`_conclusion_fallback`），避免"只说开头、丢了结论"。
+- **Hook/Bridge 强壮性加固**：
+  - 新增 `scripts/hook_health.py`：校验并自动修复 Antigravity（嵌套结构模板重建）/
+    Claude（重跑安装脚本）/ Codex（补齐缺失事件）hooks 配置 + 链路自检
+    （progress 不播报）+ `--alert` 机器人告警；
+  - 托盘新增「Hook 自检与修复」菜单项；
+  - 网关内置 30 分钟周期自检线程（启动 60s 首检），异常自动修复并以
+    `agent=system` 推送告警（msg_uid 去重）；注册 `system` agent（agent_event 白名单）；
+  - 确认托盘 `Restore-BridgeIfDown` 已自动拉起 xiaozhi-mcp 云桥接（无需新增）。
+- **固件 v1.2-mqttpush 修订（重建刷机 0x410000，保留配置）**：
+  - push MQTT 会话持久化 `cfg.session.disable_clean_session = true`：断连期间 QoS1 帧
+    由 broker 缓存、重连补投（根治中途断音）；
+  - 断流看门狗 3s → 5s，给重连补投留时间窗；
+  - 真机验证：刷机后测试播报 push ack 成功。

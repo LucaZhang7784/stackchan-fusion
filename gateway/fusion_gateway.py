@@ -666,7 +666,9 @@ def _tts_ulaw_frames(text: str) -> list[bytes]:
 def _summarize_for_speech(text: str, max_chars: int = 50) -> str:
     """轨二(吞字根治): 长文本 LLM 口语化摘要, 送入 TTS 引擎前调用。
     len(text) > max_chars 时用本地 LLM(Ollama)提炼为 ≤max_chars 字的口语化摘要;
-    LLM 不可用/超时/输出异常时降级截断 text[:max_chars], 保证推流永不卡死。"""
+    【摘要必须包含原文的完整结论】(根因/结果/决定), 可省略过程细节;
+    LLM 不可用/超时/输出异常时降级为尾部结论句提取(结论一般在结尾),
+    保证推流永不卡死且不丢结论。"""
     text = str(text or "").strip()
     if len(text) <= max_chars:
         return text
@@ -676,8 +678,9 @@ def _summarize_for_speech(text: str, max_chars: int = 50) -> str:
         if m not in models:
             models.append(m)
     prompt = (
-        f"把下面这段话提炼成不超过 {max_chars} 个字的口语化中文摘要，"
-        "保留核心信息，适合语音播报。只输出摘要正文，不要引号、不要markdown、不要任何解释。\n\n"
+        f"这是要播报给用户的任务完成消息，请提炼成不超过 {max_chars} 个字的口语化中文摘要。"
+        f"【必须包含完整结论】：摘要必须完整保留原文的最终结论（根因/结果/决定），"
+        "可以省略推理过程与中间细节。只输出摘要正文，不要引号、不要markdown、不要任何解释。\n\n"
         f"原文：{text[:800]}"
     )
     for model in models:
@@ -701,7 +704,25 @@ def _summarize_for_speech(text: str, max_chars: int = 50) -> str:
                 return content[:max_chars]
         except Exception:
             continue
-    return text[:max_chars]
+    return _conclusion_fallback(text, max_chars)
+
+
+def _conclusion_fallback(text: str, max_chars: int) -> str:
+    """LLM 摘要不可用时的降级: 结论通常在结尾, 从尾部取完整结论句(≤max_chars),
+    替代原先的头部硬截断 text[:max_chars]——避免"只说开头、丢了结论"。"""
+    t = " ".join(str(text).split()).strip()
+    if len(t) <= max_chars:
+        return t
+    cand = t
+    for sep in ("。", "！", "？", "\n", "；"):
+        idx = cand.rfind(sep)
+        if idx < 0:
+            break
+        tail = cand[idx + 1:].strip()
+        if 0 < len(tail) <= max_chars and not tail.startswith(("-", "#", "*", "`", ">")):
+            return tail
+        cand = cand[:idx]
+    return t[-max_chars:].lstrip("。！？，；:： ")
 
 
 def _prewarm_local_llm() -> None:
@@ -723,6 +744,31 @@ def _prewarm_local_llm() -> None:
         log(f"本地 LLM 预热完成: {model}")
     except Exception as e:
         log(f"本地 LLM 预热失败(不影响启动): {e}")
+
+
+_HOOK_HEALTH_INTERVAL_S = 1800  # 30 分钟周期自检
+
+
+def _hook_health_loop() -> None:
+    """周期自检: 每 30 分钟跑一次 scripts/hook_health.py --alert。
+    检查并自动修复 Antigravity/Claude/Codex hooks 配置 + 链路自检;
+    发现异常/已修复时由该脚本以 agent=system 向机器人推送告警(去重)。
+    防 hook 配置漂移导致静默失效(2026-08-10 Antigravity hooks.json 扁平化事故)。"""
+    time.sleep(60)  # 启动后 1 分钟首检
+    py = r"C:\WINDOWS\py.exe"
+    script = str(Path(__file__).resolve().parent.parent / "scripts" / "hook_health.py")
+    while True:
+        try:
+            r = subprocess.run([py, "-3", script, "--alert"],
+                               capture_output=True, text=True, timeout=120,
+                               encoding="utf-8", errors="replace")
+            if r.returncode != 0:
+                log(f"hook 自检异常(rc={r.returncode}): {(r.stdout or r.stderr).strip()[:200]}")
+            else:
+                log("hook 自检正常")
+        except Exception as e:
+            log(f"hook 自检执行失败: {e}")
+        time.sleep(_HOOK_HEALTH_INTERVAL_S)
 
 
 def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str, float, str]:
@@ -1294,6 +1340,7 @@ def main() -> None:
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
     threading.Thread(target=_push_worker, daemon=True).start()  # 单 Worker 串行推流(指标 1)
     threading.Thread(target=_prewarm_local_llm, daemon=True).start()  # 预热本地 LLM, 首次长文本摘要不降级截断
+    threading.Thread(target=_hook_health_loop, daemon=True).start()  # 30 分钟周期自检(hook 配置漂移自动修复+告警)
     if int(CFG.get("push_interval_s", 5) or 0) > 0:
         threading.Thread(target=_push_loop, daemon=True).start()
 

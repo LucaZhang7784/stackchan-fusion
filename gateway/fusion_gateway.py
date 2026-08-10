@@ -75,10 +75,11 @@ DEFAULT_CONFIG = {
     "push_mqtt_port": 1883,
     "push_topic_prefix": "stackchan",
     "push_tts_voice": "zh-HK-HiuMaanNeural",  # 女声粤语曉曼(中英混杂); 备选 ja-JP-NanamiNeural(日语) / zh-TW-HsiaoChenNeural(台普)
-    "push_tts_rate": "+20%",
+    "push_tts_rate": "+0%",  # 播报语速 1.0x(基准), 不再 +20% 提速
     # Phase 9-D: 本地粤语 TTS 兜底 + 离线 LLM
     "tts_cache_size": 200,  # TTS 帧缓存 LRU 容量(按文本 SHA256)
     "tts_fallback_model_dir": "tts_models/vits-cantonese-hf-xiaomaiiwn",  # sherpa-onnx 粤语女声(小美)
+    "tts_fallback_speed": 1.0,  # 本地兜底 TTS 语速 1.0x
     "local_llm_host": "http://127.0.0.1:11434",  # Ollama
     "local_llm_model": "qwen3:8b",
 }
@@ -662,7 +663,7 @@ def _tts_ulaw_frames(text: str) -> list[bytes]:
     return frames
 
 
-def _summarize_for_speech(text: str, max_chars: int = 60) -> str:
+def _summarize_for_speech(text: str, max_chars: int = 50) -> str:
     """轨二(吞字根治): 长文本 LLM 口语化摘要, 送入 TTS 引擎前调用。
     len(text) > max_chars 时用本地 LLM(Ollama)提炼为 ≤max_chars 字的口语化摘要;
     LLM 不可用/超时/输出异常时降级截断 text[:max_chars], 保证推流永不卡死。"""
@@ -731,27 +732,30 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
     (Phase 8.1: action=done/question 驱动固件点头/偏头), 供固件 ACK 回执。
     返回 (ok, err, 音频时长秒, 实际发送文本)。"""
     try:
-        text = _tts_text(text, limit=150)
-        text = _summarize_for_speech(text, max_chars=60)  # 轨二: 长文本 LLM 口语化摘要(≤60字)后送 TTS, 根治长文本吞字
+        # 播报规则: ≤50 字完整播报; >50 字 LLM 口语化摘要为 ≤50 字(失败降级截断)。
+        # 先只做清洗不截断(limit 拉高), 保证摘要器拿到完整原文。
+        text = _tts_text(text, limit=2000)
+        text = _summarize_for_speech(text, max_chars=50)
         topic = f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/push"
         client = _push_mqtt()
         # 先合成全部 µ-law 帧, 再发 START: 严禁机器人先进 Speaking 空等 TTS
         # (否则 3s 断流看门狗会误判为断流, 把帧全部丢弃 = 播报被掐掉)
         frames = _tts_ulaw_frames(text)
-        # QoS0 + 2帧/条批量: 每批 ~1922B(< MTU, 不触发 TCP 分片); 固件 MQTT buffer 8KB + poll 读超时 5s 防断连
+        # QoS1 + 2帧/条批量: 每批 ~1922B; 固件订阅 QoS1, 公网 EMQX 丢包/断连时 broker 重投,
+        # 根治 QoS0 静默丢帧导致的播报吞字(ACK 只证明 START 到达, 音频帧必须靠 QoS1 保送达)
         if msg_uid and action:
-            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + action.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=0)
+            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + action.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=1)
         elif msg_uid:
-            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=0)
+            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=1)
         else:
-            client.publish(topic, b"\x01" + text.encode("utf-8"), qos=0)
+            client.publish(topic, b"\x01" + text.encode("utf-8"), qos=1)
         for i in range(0, len(frames), _PUSH_BATCH_FRAMES):
             if i > 0:
                 time.sleep(_PUSH_BATCH_INTERVAL_S)  # 节流: 首包立发, 后续 170ms/批
             batch = frames[i:i + _PUSH_BATCH_FRAMES]
             payload = b"\x02" + bytes([len(batch)]) + b"".join(batch)
-            client.publish(topic, payload, qos=0)
-        client.publish(topic, b"\x03", qos=0)
+            client.publish(topic, payload, qos=1)
+        client.publish(topic, b"\x03", qos=1)
         return True, "ok", len(frames) * (_PUSH_FRAME_MS / 1000.0), text
     except Exception as e:
         return False, str(e), 0.0, ""

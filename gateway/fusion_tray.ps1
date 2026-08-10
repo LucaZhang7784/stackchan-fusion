@@ -17,7 +17,7 @@ try {
 } catch { }
 if (-not $authToken) { $authToken = 'YOUR_GATEWAY_TOKEN' }
 
-$bridgeErr = '<PROJECT_ROOT>\fusion.firmware.0731\xiaozhi-mcp\bridge.err'
+$bridgeErr = Join-Path (Split-Path -Parent $root) 'xiaozhi-mcp\bridge.err'
 $eventsFile = Join-Path $root 'data\agent_events.jsonl'
 $confirmFile = Join-Path $root 'data\agent_confirmations.json'
 
@@ -273,7 +273,7 @@ function Restore-BridgeIfDown {
     if (((Get-Date) - $script:lastBridgeRestartAt).TotalSeconds -lt 30) { return }
     $script:lastBridgeRestartAt = Get-Date
     try {
-        $run = '<PROJECT_ROOT>\fusion.firmware.0731\xiaozhi-mcp\run_bridge.ps1'
+        $run = Join-Path (Split-Path -Parent $root) 'xiaozhi-mcp\run_bridge.ps1'
         Start-Process -FilePath 'powershell.exe' `
             -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$run`"") `
             -WindowStyle Hidden | Out-Null
@@ -478,6 +478,28 @@ function Build-Menu {
         }
     })
     $script:menu.Items.Add($itemInstallHooks) | Out-Null
+
+    # Hook 自检与修复: 校验并自动修复 Antigravity/Claude/Codex hooks 配置 + 链路自检
+    $itemHookHealth = New-Object System.Windows.Forms.ToolStripMenuItem
+    $itemHookHealth.Text = 'Hook 自检与修复'
+    $itemHookHealth.Add_Click({
+        $hh = Join-Path (Split-Path -Parent $root) 'scripts\hook_health.py'
+        if (-not (Test-Path -LiteralPath $hh)) {
+            [System.Windows.Forms.MessageBox]::Show("未找到自检脚本:`n$hh", 'Hook 自检', 'OK', 'Error') | Out-Null
+            return
+        }
+        try {
+            $env:PYTHONIOENCODING = 'utf-8'
+            & 'C:\WINDOWS\py.exe' -3 $hh *> $null
+            $result = Get-Content -LiteralPath (Join-Path $root 'state\hook_health.last.txt') `
+                -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if (-not $result) { $result = '自检完成, 但未生成结果文件。' }
+            [System.Windows.Forms.MessageBox]::Show($result.Trim(), 'Hook 自检与修复', 'OK', 'Information') | Out-Null
+        } catch {
+            [System.Windows.Forms.MessageBox]::Show("执行失败: $($_.Exception.Message)", 'Hook 自检', 'OK', 'Error') | Out-Null
+        }
+    })
+    $script:menu.Items.Add($itemHookHealth) | Out-Null
 
     $itemRestart = New-Object System.Windows.Forms.ToolStripMenuItem
     $itemRestart.Text = '重启网关'

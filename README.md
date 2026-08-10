@@ -5,6 +5,8 @@
 
 > v08.10（2026-08-10）：播报规则 ≤50 字完整 / 超长 LLM 摘要 ≤50 字 + 语速归 1.0x +
 > 推送 QoS0→QoS1（公网丢帧吞字根治）；Trae 桌面端 hooks 接入研究（原生引擎，免企业账号）。
+> 修订：摘要保留完整结论 + Hook 自检与修复（托盘菜单 / 30 分钟周期 + 机器人告警）+
+> 固件 MQTT 持久会话与看门狗 5s。
 > v08.08（2026-08-07 午后）：LED 灯环根治（PY32 GPIO13 出厂序列 + led_manual_ 待机锁 +
 > I2C 互斥；真机播报绿→待机暖橙）+ Antigravity 播报修复（hooks 命名空间 `stackchan` +
 > AfterAgent/agent.stop 事件别名）+ Prompt v3.6（灯色归固件）+ 固件 v1.2-mqttpush 重建。
@@ -187,6 +189,13 @@ python scripts\verify_connectivity.py
   全局 hooks 路径 `%USERPROFILE%/.trae-cn/hooks.json`，方案见
   docs/trae-work-integration-feasibility-20260807.md（待实施）。
 - 排查记录：云链路 ASR 语种基准确认（xiaozhi.me 云端设置；selfhost language_hints 注释态）。
+- **摘要保留完整结论**：提示词强制包含最终结论（根因/结果/决定）；降级改为尾部结论句提取，
+  不再头部硬截断丢结论。
+- **Hook/Bridge 强壮性**：`scripts/hook_health.py` 自动校验修复 Antigravity/Claude/Codex
+  hooks + 链路自检；托盘「Hook 自检与修复」菜单；网关 30 分钟周期自检 + 异常机器人告警
+  （agent=system，去重）；托盘已自动拉起 xiaozhi-mcp 云桥接。
+- **固件 v1.2-mqttpush 修订**：MQTT 持久会话（disable_clean_session）+ 看门狗 3s→5s；
+  重建刷机 0x410000，真机 push ack 验证通过。
 
 ### v08.09（2026-08-07 晚）
 

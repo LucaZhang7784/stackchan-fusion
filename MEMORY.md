@@ -107,7 +107,7 @@ xiaozhi.me 云 LLM ──MCP──► xiaozhi-mcp 桥接(mcp_pipe.py + server.py
 4. **陈旧 outbox**: `agent_result_check` 只返回 30 分钟内新结果, 过期自动归档; 旧文件已清空。
 5. **托盘双图标**: fusion_tray.ps1 加单实例保护。
 6. **计划任务弹窗**: 全部改 wscript.exe + VBS 隐藏启动（StackChan 3 个任务）。
-7. **mcp-endpoint health key**: config.json 已改为容器实际 key `YOUR_HEALTH_KEY`。
+7. **mcp-endpoint health key**: 见 `gateway/config.json` 的 endpoint_health_url（真实 key 不入库）。
 8. **claude 可见窗口无完成事件**: `claude -p`(print 模式)不触发 Claude Code hooks →
    `agents/claude_visible_run.py` 包装脚本运行并捕获输出, 完成后同时 POST done 到网关
    + 写 outbox（agent_result_check 与 agent_pending 两条路都通）。
@@ -233,5 +233,22 @@ python -m esptool --chip esp32s3 -b 460800 --port COM8 --before default-reset --
 - 发布副本: `<GITHUB_REPO_DIR>`（stackchan-fusion-github）
 - 07.31 备份包: `<PROJECT_DIR>/package-stackchan.zip.0731-backup`
 
+
+## 十、Hooks 保固规范（v08.10.2，务必遵守）
+
+- **Antigravity hooks.json = 扁平结构**：`~/.gemini/config/hooks.json` 的 stackchan 段，
+  每个事件条目顶层直接写 `{"type":"command","command":"...","timeout":10}`；
+  嵌套 `{"hooks":[...]}` 会被 Antigravity 桌面端 Go 语言服务器拒载
+  （`language_server.exe` / `hooks.go:44 "command hook must specify 'command'"`）。
+- **Claude / Codex = 嵌套结构**：`~/.claude/settings.json` 与 `~/.codex/hooks.json`
+  用嵌套 `{"hooks":[...]}`（各自 loader 认嵌套），不要拍平。
+- **唯一自动修复方是 `scripts/hook_health.py`**：每 30 分钟周期自检 + 托盘
+  「Hook 自检与修复」菜单；修复前强备份 `.bak-auto-repair-*`；异常/已修复会以
+  `agent=system` 推送机器人告警。
+- **心跳防误杀**：Antigravity 进程在运行 + language_server.log 近期有活动、
+  但 antigravity_hook.log 超过 6 小时无写入才告警；隔夜挂机不告警。
+- 历史教训：2026-08-10 曾因 Antigravity 把 stackchan 段"修"成嵌套/被 Agent 拍平，
+  导致钩子静默失效 2 天（日志零写入、消息不播报）。任何 Agent 声称"修复 hooks"时，
+  先核对本条规范。
 
 

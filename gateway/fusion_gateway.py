@@ -640,22 +640,34 @@ def _tts_ulaw_frames(text: str) -> list[bytes]:
         return cached
     frames: list[bytes] = []
     edge_err: Exception | None = None
-    try:
-        mp3 = os.path.join(tempfile.gettempdir(), "fusion_push_tts.mp3")
-        if os.path.exists(mp3):
-            os.remove(mp3)
-        _edge_tts_mp3_sync(text, mp3)
-        pcm = subprocess.run([_FFMPEG, "-y", "-i", mp3, "-f", "s16le",
-                              "-ar", str(_PUSH_SAMPLE_RATE), "-ac", "1", "-"],
-                             capture_output=True).stdout
-        ulaw = audioop.lin2ulaw(pcm, 2)
-        frames = [ulaw[i:i + _PUSH_FRAME_BYTES]
-                  for i in range(0, len(ulaw) - len(ulaw) % _PUSH_FRAME_BYTES, _PUSH_FRAME_BYTES)]
-    except Exception as e:
-        edge_err = e
+    # EdgeTTS 中途断流防护: 实测时长 < 期望(字数×200ms)的 55% 视为截断, 重试一次
+    expected_ms = max(1, len(text)) * 200
+    for attempt in range(2):
+        try:
+            mp3 = os.path.join(tempfile.gettempdir(), "fusion_push_tts.mp3")
+            if os.path.exists(mp3):
+                os.remove(mp3)
+            _edge_tts_mp3_sync(text, mp3)
+            pcm = subprocess.run([_FFMPEG, "-y", "-i", mp3, "-f", "s16le",
+                                  "-ar", str(_PUSH_SAMPLE_RATE), "-ac", "1", "-"],
+                                 capture_output=True).stdout
+            ulaw = audioop.lin2ulaw(pcm, 2)
+            frames = [ulaw[i:i + _PUSH_FRAME_BYTES]
+                      for i in range(0, len(ulaw) - len(ulaw) % _PUSH_FRAME_BYTES, _PUSH_FRAME_BYTES)]
+            if not frames:
+                raise RuntimeError("empty audio")
+            actual_ms = len(frames) * _PUSH_FRAME_MS
+            if actual_ms < expected_ms * 0.55:
+                raise RuntimeError(f"truncated {actual_ms}ms < {expected_ms * 0.55:.0f}ms")
+            break
+        except Exception as e:
+            edge_err = e
+            frames = []
+            if attempt == 0:
+                log(f"EdgeTTS 合成异常/截断, 重试: {e}")
     if not frames:
-        # EdgeTTS 失败/空音频 -> 本地粤语兜底, 保证离线也能播报
-        log(f"EdgeTTS 不可用({edge_err}), 回退本地粤语 TTS: {text[:60]}")
+        # EdgeTTS 失败/空音频/截断 -> 本地粤语兜底, 保证内容完整且能播报
+        log(f"EdgeTTS 不可用/截断({edge_err}), 回退本地粤语 TTS: {text[:60]}")
         frames = _sherpa_tts_ulaw_frames(text)
     if not frames:
         raise RuntimeError("TTS 无音频输出")

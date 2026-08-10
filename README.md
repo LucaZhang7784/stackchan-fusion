@@ -196,6 +196,11 @@ python scripts\verify_connectivity.py
   （agent=system，去重）；托盘已自动拉起 xiaozhi-mcp 云桥接。
 - **固件 v1.2-mqttpush 修订**：MQTT 持久会话（disable_clean_session）+ 看门狗 3s→5s；
   重建刷机 0x410000，真机 push ack 验证通过。
+- **Hooks 保固规范（务必遵守，防再被改坏）**：Antigravity hooks.json = **扁平结构**
+  （条目顶层直接带 `command`，Go 语言服务器只认扁平，嵌套会被 hooks.go:44 拒载）；
+  Claude/Codex = **嵌套结构**（各自 loader 认嵌套）。任何"修复"一律交给
+  `scripts/hook_health.py`（30 分钟周期自检 + 托盘菜单），严禁手动或让 Agent
+  拍平/嵌套化 Antigravity 配置。
 
 ### v08.09（2026-08-07 晚）
 

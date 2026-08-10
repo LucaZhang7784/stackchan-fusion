@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
 """hook_health.py — StackChan hook 配置自检 + 自动修复 + 链路自检 + 机器人告警
 
-防"配置被拍平/改坏导致 hook 静默失效"(2026-08-10 Antigravity hooks.json 扁平化事故):
-  1) Antigravity : ~/.gemini/config/hooks.json  stackchan 段必须为嵌套结构 + 7 事件
+防"配置被改坏导致 hook 静默失效"(2026-08-10 Antigravity hooks.json 事故):
+  1) Antigravity : ~/.gemini/config/hooks.json  stackchan 段必须为【扁平结构】+ 7 事件
+     (Go 语言服务器 language_server.exe / jsonhook.go 只认扁平命令对象,
+      嵌套 {"hooks":[...]} 会被拒载: hooks.go:44 "command hook must specify 'command'")
   2) Claude      : ~/.claude/settings.json     4 个 fusion 钩子(claude_hook.py)
   3) Codex       : ~/.codex/hooks.json         5 个事件(codex_hook.py)
   4) hook 脚本存在 + py_compile
   5) 链路自检: 向网关 POST progress 事件(不播报, 只写事件日志)
+  6) Antigravity loader 真实状态: 尾部读取 language_server.log, 检测最近是"Loaded"还是"Failed to parse"
+  7) Antigravity 钩子心跳(防误杀): 仅当 Antigravity 在运行 且 loader 有近期活动、
+     但 antigravity_hook.log 长期无写入时, 才判定"钩子未触发"(隔夜挂机不告警)
 
 用法:
   py hook_health.py                  # 检查+修复+链路自检, 打印摘要
@@ -34,9 +39,14 @@ LOG_PATH = ROOT / "gateway" / "state" / "hook_health.log"
 LAST_RESULT = ROOT / "gateway" / "state" / "hook_health.last.txt"
 
 HOME = Path.home()
+APPDATA_DIR = Path(os.environ.get("APPDATA", str(HOME / "AppData" / "Roaming")))
 ANTIGRAVITY_HOOKS = HOME / ".gemini" / "config" / "hooks.json"
 CLAUDE_SETTINGS = HOME / ".claude" / "settings.json"
 CODEX_HOOKS = HOME / ".codex" / "hooks.json"
+ANTIGRAVITY_HOOK_LOG = ROOT / "gateway" / "state" / "antigravity_hook.log"
+LANGUAGE_SERVER_LOG = APPDATA_DIR / "Antigravity" / "logs" / "language_server.log"
+HEARTBEAT_STALE_H = 6        # antigravity_hook.log 超过 6h 无写入视为"未触发"(可调)
+ACTIVITY_WINDOW_MIN = 60     # language_server.log 近 60 分钟有活动才算"有交互"
 
 AGENTS_LIST = ["antigravity", "codex", "claude", "vscode"]
 HOOK_SCRIPTS = ["antigravity_hook.py", "codex_hook.py", "claude_hook.py", "vscode_hook.py"]
@@ -54,7 +64,10 @@ def antigravity_template() -> dict:
     tpl: dict = {"enabled": True}
     for ev in ("SessionStart", "PreToolUse", "PostToolUse", "PermissionRequest",
                "PermissionDenied", "Elicitation", "Stop"):
-        item: dict = {"hooks": [_ag_cmd(ev)]}
+        # Antigravity 桌面端 Go 语言服务器(language_server.exe / jsonhook.go)要求
+        # 扁平命令对象: 条目顶层直接带 command/type/timeout。
+        # 嵌套 {"hooks":[...]} 会被拒载: "command hook must specify 'command'"(hooks.go:44)。
+        item: dict = _ag_cmd(ev)
         if ev in ("PreToolUse", "PostToolUse"):
             item["matcher"] = ""
         tpl[ev] = [item]
@@ -82,7 +95,8 @@ def _load_token() -> str:
 
 
 def _backup(path: Path) -> None:
-    bak = path.with_name(f"{path.name}.bak-{datetime.now():%Y%m%d-%H%M%S}-health")
+    """自动修复前强备份: .bak-auto-repair-YYYYMMDD-HHMMSS"""
+    bak = path.with_name(f"{path.name}.bak-auto-repair-{datetime.now():%Y%m%d-%H%M%S}")
     try:
         bak.write_bytes(path.read_bytes())
         log(f"备份 {path.name} -> {bak.name}")
@@ -112,6 +126,61 @@ def _gateway_ok() -> bool:
         return False
 
 
+def _read_tail(path: Path, n: int = 100) -> list[str]:
+    """只读文件末尾(窗口 ≤64KB), 严禁全量扫描几 MB 的大日志。"""
+    try:
+        size = path.stat().st_size
+        if size <= 0:
+            return []
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 65536))
+            data = f.read().decode("utf-8", errors="replace")
+        return data.splitlines()[-n:]
+    except Exception:
+        return []
+
+
+def antigravity_loader_status() -> str:
+    """Antigravity Go loader 真实状态: ''=最近成功加载; 'fail'=最近拒载; 'unknown'=无记录。"""
+    if not LANGUAGE_SERVER_LOG.exists():
+        return "unknown"
+    lines = _read_tail(LANGUAGE_SERVER_LOG, 100)
+    last_fail, last_loaded = -1, -1
+    for i, ln in enumerate(lines):
+        if "Failed to parse hooks file" in ln or "invalid hook" in ln:
+            last_fail = i
+        elif "Loaded hooks.json" in ln:
+            last_loaded = i
+    if last_loaded >= 0 and last_fail < last_loaded:
+        return ""
+    if last_fail >= 0 and last_fail > last_loaded:
+        return "fail"
+    return "unknown"
+
+
+def antigravity_heartbeat() -> str:
+    """防误杀心跳: Antigravity 在运行 + loader 近期有活动, 但 hook 日志长期无写入 -> 告警。
+    挂机隔夜(loader 也无活动)一律不告警。返回 '' 正常, 否则异常描述。"""
+    try:
+        tl = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Antigravity.exe"],
+                            capture_output=True, text=True, timeout=15)
+        if "Antigravity.exe" not in tl.stdout:
+            return ""  # 进程未运行: 无钩子属正常, 不告警
+    except Exception:
+        return ""
+    now = time.time()
+    hook_age = now - ANTIGRAVITY_HOOK_LOG.stat().st_mtime if ANTIGRAVITY_HOOK_LOG.exists() else float("inf")
+    if hook_age <= HEARTBEAT_STALE_H * 3600:
+        return ""  # 钩子在正常写入
+    if not LANGUAGE_SERVER_LOG.exists():
+        return ""
+    ls_age = now - LANGUAGE_SERVER_LOG.stat().st_mtime
+    if ls_age > ACTIVITY_WINDOW_MIN * 60:
+        return ""  # loader 也无活动 -> 挂机, 不告警
+    return (f"钩子未触发({ANTIGRAVITY_HOOK_LOG.name} 已 {hook_age/3600:.1f}h 无写入, "
+            f"但 language_server.log {ls_age/60:.0f} 分钟前仍有活动)")
+
+
 def check_antigravity() -> str:
     """返回 '' 表示正常, 否则返回异常描述; 可修复则就地修复。"""
     if not ANTIGRAVITY_HOOKS.exists():
@@ -130,17 +199,16 @@ def check_antigravity() -> str:
         if not isinstance(items, list) or not items:
             bad.append(ev)
             continue
-        # 必须嵌套结构: 组内含 "hooks" 数组, 命令指向 antigravity_hook.py
-        nested = any(
-            isinstance(it, dict) and isinstance(it.get("hooks"), list)
-            and any("antigravity_hook.py" in str(h.get("command", "")) for h in it["hooks"])
+        # 必须是扁平结构: 条目顶层直接含 command 且指向 antigravity_hook.py
+        flat = any(
+            isinstance(it, dict) and "antigravity_hook.py" in str(it.get("command", ""))
             for it in items
         )
-        if not nested:
+        if not flat:
             bad.append(ev)
     if not bad:
         return ""
-    # 修复: 备份后重建 stackchan 段(保留 promlight 等其它段)
+    # 修复: 强备份后仅重建 stackchan 段(增量修复, 保留其它用户自定义节点)
     _backup(ANTIGRAVITY_HOOKS)
     d["stackchan"] = antigravity_template()
     try:
@@ -284,6 +352,15 @@ def main() -> int:
 
     script_issues = check_scripts()
     issues.extend(script_issues)
+
+    # Antigravity loader 真实状态(尾部读取, 防全量扫描大日志)
+    ls = antigravity_loader_status()
+    if ls == "fail":
+        issues.append("Antigravity: language_server 拒载 hooks.json(Failed to parse, 结构可能被改坏)")
+    # Antigravity 钩子心跳(防误杀: 仅当有交互却无写入时告警)
+    hb = antigravity_heartbeat()
+    if hb:
+        issues.append("Antigravity: " + hb)
 
     st_note = ""
     if not check_only:

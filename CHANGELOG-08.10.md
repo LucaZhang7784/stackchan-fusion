@@ -47,3 +47,26 @@
     由 broker 缓存、重连补投（根治中途断音）；
   - 断流看门狗 3s → 5s，给重连补投留时间窗；
   - 真机验证：刷机后测试播报 push ack 成功。
+
+## v08.10.2（2026-08-10 深夜）
+
+- **Antigravity hooks 根因定案并修复**：Antigravity 桌面端由 Go 语言服务器
+  （language_server.exe / jsonhook.go）解析 `~/.gemini/config/hooks.json`，**只认扁平
+  命令对象**（条目顶层直接带 `command`）；嵌套 `{"hooks":[...]}` 会被拒载
+  （hooks.go:44 "command hook must specify 'command'"）。已按扁平结构重写，真机确认
+  `posted done ok` + 机器人播报恢复。
+- **hook_health.py 大升级（保固 v2）**：
+  - Antigravity 校验/修复标准改为扁平结构（检测到嵌套 → 备份 `.bak-auto-repair-*`
+    后重建扁平模板，仅动 stackchan 段、保留其它自定义节点）；
+  - 新增 Antigravity loader 真实状态自检（尾部读取 language_server.log，比较
+    Loaded vs Failed to parse，防全量扫描大日志）；
+  - 新增钩子心跳检测（防误杀：仅当 Antigravity 在运行 + loader 近 60 分钟有活动、
+    但 antigravity_hook.log 超 6h 无写入才告警；隔夜挂机不告警）；
+  - 告警文案带具体原因（格式被改坏 / loader 拒载 / 钩子未触发）。
+- **固件状态机加固（语音字幕不一致根治）**：STOP 后启动 200ms 极速轮询，播放队列
+  排空 + 100ms DMA 放空后自动切回 Idle（清字幕 / 回暖橙 / 恢复唤醒）；状态防踩踏
+  （仅 Speaking 才切 Idle，进 Listening 立即清标志）；重建刷机 0x410000。
+- **网关 EdgeTTS 截断防护**：合成时长 < 期望（字数×200ms）的 55% 视为中途断流，
+  自动重试一次，仍失败回退本地 sherpa（同文本，内容一致）。
+- **文档保固**：README/MEMORY 新增 Hooks 保固规范（Antigravity=扁平、Claude/Codex=嵌套、
+  唯一修复方 hook_health），防再次被"修"错。

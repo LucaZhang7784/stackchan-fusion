@@ -46,7 +46,7 @@ CODEX_HOOKS = HOME / ".codex" / "hooks.json"
 ANTIGRAVITY_HOOK_LOG = ROOT / "gateway" / "state" / "antigravity_hook.log"
 LANGUAGE_SERVER_LOG = APPDATA_DIR / "Antigravity" / "logs" / "language_server.log"
 HEARTBEAT_STALE_H = 6        # antigravity_hook.log 超过 6h 无写入视为"未触发"(可调)
-ACTIVITY_WINDOW_MIN = 60     # language_server.log 近 60 分钟有活动才算"有交互"
+ACTIVITY_WINDOW_MIN = 60     # 近 60 分钟有"真实会话"(brain transcript 更新)才算"有交互"
 
 AGENTS_LIST = ["antigravity", "codex", "claude", "vscode"]
 HOOK_SCRIPTS = ["antigravity_hook.py", "codex_hook.py", "claude_hook.py", "vscode_hook.py"]
@@ -158,9 +158,29 @@ def antigravity_loader_status() -> str:
     return "unknown"
 
 
+def _recent_brain_activity(window_s: float) -> tuple[bool, float]:
+    """最近一次真实会话 transcript 更新时间(秒前)。
+    只有真实对话/任务才会写 brain transcript;
+    language_server.log 会被后台 CDP/权限日志持续 touch, 不能当交互信号(2026-08-11 误报教训)。"""
+    newest = float("inf")
+    for base in (HOME / ".gemini" / "antigravity" / "brain",
+                 HOME / ".gemini" / "antigravity-ide" / "brain"):
+        if not base.is_dir():
+            continue
+        for p in base.rglob("transcript_full.jsonl"):
+            try:
+                age = time.time() - p.stat().st_mtime
+                if age < newest:
+                    newest = age
+            except Exception:
+                continue
+    return newest <= window_s, newest
+
+
 def antigravity_heartbeat() -> str:
-    """防误杀心跳: Antigravity 在运行 + loader 近期有活动, 但 hook 日志长期无写入 -> 告警。
-    挂机隔夜(loader 也无活动)一律不告警。返回 '' 正常, 否则异常描述。"""
+    """防误杀心跳: Antigravity 在运行 + 最近有真实会话(transcript 更新),
+    但 hook 日志长期无写入 -> 告警。挂机隔夜(无会话活动)一律不告警。
+    返回 '' 正常, 否则异常描述。"""
     try:
         tl = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Antigravity.exe"],
                             capture_output=True, text=True, timeout=15)
@@ -172,13 +192,13 @@ def antigravity_heartbeat() -> str:
     hook_age = now - ANTIGRAVITY_HOOK_LOG.stat().st_mtime if ANTIGRAVITY_HOOK_LOG.exists() else float("inf")
     if hook_age <= HEARTBEAT_STALE_H * 3600:
         return ""  # 钩子在正常写入
-    if not LANGUAGE_SERVER_LOG.exists():
-        return ""
-    ls_age = now - LANGUAGE_SERVER_LOG.stat().st_mtime
-    if ls_age > ACTIVITY_WINDOW_MIN * 60:
-        return ""  # loader 也无活动 -> 挂机, 不告警
+    active, newest_age = _recent_brain_activity(ACTIVITY_WINDOW_MIN * 60)
+    if not active:
+        return ""  # 无真实会话 -> 挂机, 不告警
+    if newest_age < 180:
+        return ""  # 会话仍在写入(未结束), 暂不告警
     return (f"钩子未触发({ANTIGRAVITY_HOOK_LOG.name} 已 {hook_age/3600:.1f}h 无写入, "
-            f"但 language_server.log {ls_age/60:.0f} 分钟前仍有活动)")
+            f"但 {newest_age/60:.0f} 分钟前有真实会话活动)")
 
 
 def check_antigravity() -> str:

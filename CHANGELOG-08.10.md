@@ -70,3 +70,12 @@
   自动重试一次，仍失败回退本地 sherpa（同文本，内容一致）。
 - **文档保固**：README/MEMORY 新增 Hooks 保固规范（Antigravity=扁平、Claude/Codex=嵌套、
   唯一修复方 hook_health），防再次被"修"错。
+
+## v08.10.3（2026-08-11 上午）
+
+- **心跳误报修复**：`antigravity_heartbeat` 的"交互信号"从 language_server.log 修改时间
+  改为 **brain 会话 transcript 更新时间**（language_server.log 会被后台 CDP/权限日志持续
+  touch，不能当交互信号）；并加"会话仍在写入（3 分钟内）则不告警"。实测挂机 12h 不再误报。
+- **自检周期 30 分钟 → 5 分钟**：更快发现配置漂移/钩子未触发；周期检查改用
+  `--alert --check-only`（不再每 5 分钟刷 4 条 progress 事件污染队列视图；
+  链路自检由托盘「Hook 自检与修复」手动执行）。

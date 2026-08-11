@@ -758,7 +758,7 @@ def _prewarm_local_llm() -> None:
         log(f"本地 LLM 预热失败(不影响启动): {e}")
 
 
-_HOOK_HEALTH_INTERVAL_S = 1800  # 30 分钟周期自检
+_HOOK_HEALTH_INTERVAL_S = 300  # 5 分钟周期自检(2026-08-11 缩短: 配置漂移/钩子未触发更快发现)
 
 
 def _hook_health_loop() -> None:
@@ -771,7 +771,9 @@ def _hook_health_loop() -> None:
     script = str(Path(__file__).resolve().parent.parent / "scripts" / "hook_health.py")
     while True:
         try:
-            r = subprocess.run([py, "-3", script, "--alert"],
+            # --check-only: 周期检查不做链路自检(每 5 分钟 4 条 progress 会刷爆事件队列视图);
+            # 链路自检由托盘「Hook 自检与修复」手动执行。
+            r = subprocess.run([py, "-3", script, "--alert", "--check-only"],
                                capture_output=True, text=True, timeout=120,
                                encoding="utf-8", errors="replace")
             if r.returncode != 0:
@@ -1352,7 +1354,7 @@ def main() -> None:
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
     threading.Thread(target=_push_worker, daemon=True).start()  # 单 Worker 串行推流(指标 1)
     threading.Thread(target=_prewarm_local_llm, daemon=True).start()  # 预热本地 LLM, 首次长文本摘要不降级截断
-    threading.Thread(target=_hook_health_loop, daemon=True).start()  # 30 分钟周期自检(hook 配置漂移自动修复+告警)
+    threading.Thread(target=_hook_health_loop, daemon=True).start()  # 5 分钟周期自检(hook 配置漂移自动修复+告警)
     if int(CFG.get("push_interval_s", 5) or 0) > 0:
         threading.Thread(target=_push_loop, daemon=True).start()
 

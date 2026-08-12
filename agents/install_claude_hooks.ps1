@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
 # ── 目标文件: settings.json(用户级全局) ──────────────────────────────────────────
 # 历史: 曾用 settings.local.json, 理由是避开 ccswitch 全量覆盖 settings.json。
@@ -16,7 +16,7 @@ if (-not (Test-Path $python)) {
     $python = (Get-Command python -ErrorAction SilentlyContinue).Source
     if (-not $python) { throw "找不到 Python, 请先安装并配置 Python311" }
 }
-$hookScript = "<PROJECT_ROOT>\fusion.firmware.0731\agents\claude_hook.py"
+$hookScript = "D:/PROJECT_ROOT\fusion.firmware.0731\agents\claude_hook.py"
 # 命令用正斜杠: Claude Code 在 Windows 上经 bash 执行 hook 时反斜杠会被吃掉(实测 command not found)
 $hookCmd = "`"" + ($python -replace '\\', '/') + "`" `"" + ($hookScript -replace '\\', '/') + "`""
 

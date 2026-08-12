@@ -1,7 +1,7 @@
 # 部署融合推送补丁: /api/push (服务器 TTS 直推设备) + SERVER_MCP 注册
 # 用法: powershell -ExecutionPolicy Bypass -File deploy_fusion_push.ps1
 param(
-  [string]$StackChanRoot = '<PROJECT_ROOT>'
+  [string]$StackChanRoot = 'D:/PROJECT_ROOT'
 )
 $ErrorActionPreference = 'Stop'
 $fusion = Join-Path $StackChanRoot 'fusion.firmware.0731'
@@ -64,7 +64,7 @@ if ($logs -match '服务端MCP客户端已连接' -and ($logs -match 'fusion' -o
   $logs -split "`r?`n" | Select-String -Pattern '服务端MCP客户端已连接|可用工具' | Select-Object -Last 3 | ForEach-Object { Write-Host "PASS: $_" }
 } else {
   Write-Host '注意: SERVER_MCP 注册在设备连接时才触发。请打开机器人电源等它重连, 然后运行:'
-  Write-Host '  python <PROJECT_ROOT>\fusion.firmware.0731\scripts\verify_connectivity.py'
+  Write-Host '  python D:/PROJECT_ROOT\fusion.firmware.0731\scripts\verify_connectivity.py'
   Write-Host '网关与 /api/push 已就绪(/api/status 检查见上)。'
 }
 if (-not $ok) { Write-Host '部署未完全成功, 请检查后重试。'; exit 1 }

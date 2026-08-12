@@ -19,10 +19,9 @@
   "push_mqtt_host": "broker-cn.emqx.io",
   "push_mqtt_port": 1883,
   "push_tts_voice": "zh-HK-HiuMaanNeural",
-  "push_tts_rate": "+0%",
+  "push_tts_rate": "+20%",
   "tts_cache_size": 200,
   "tts_fallback_model_dir": "tts_models/vits-cantonese-hf-xiaomaiiwn",
-  "tts_fallback_speed": 1.0,
   "local_llm_host": "http://127.0.0.1:11434",
   "local_llm_model": "qwen3.5:9b"
 }

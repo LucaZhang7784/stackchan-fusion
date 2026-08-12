@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$dir = "<PROJECT_ROOT>\server"
+$dir = "D:/PROJECT_ROOT\server"
 $py = (Get-Command python).Source
 
 $existing = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |

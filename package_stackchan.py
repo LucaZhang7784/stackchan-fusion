@@ -4,9 +4,9 @@ import os
 import shutil
 import zipfile
 
-ROOT = r"<PROJECT_ROOT>\fusion.firmware.0731"
+ROOT = r"D:/PROJECT_ROOT\fusion.firmware.0731"
 PKG = os.path.join(ROOT, "package-stackchan")
-FW_SRC = os.path.join(ROOT, "firmware", "post-fw-v1.0.6-ttsbuf")
+FW_SRC = os.path.join(ROOT, "firmware", "post-fw-v1.2-mqttpush")
 
 def main():
     fw_dst = os.path.join(PKG, "firmware")
@@ -36,10 +36,14 @@ def main():
     copy_dir(os.path.join(ROOT, "gateway"), os.path.join(PKG, "pc", "gateway"),
              ["fusion_gateway.py", "agents_core.py", "requirements.txt",
               "run_gateway.ps1", "stop_gateway.ps1", "install_autostart.ps1",
-              "watchdog_gateway.ps1", "fusion_tray.ps1"])
+              "watchdog_gateway.ps1", "fusion_tray.ps1", "fusion_tray_hidden.vbs",
+              "run_gateway_hidden.vbs", "tray_watchdog.ps1", "tray_watchdog_hidden.vbs",
+              "config.json.example"])
     copy_dir(os.path.join(ROOT, "agents"), os.path.join(PKG, "pc", "agents"),
              ["confirm_mcp.py", "claude_run.py", "claude_hook.py", "install_claude_hooks.ps1",
-              "antigravity_hook.py", "codex_hook.py", "claude_visible_run.py"])
+              "antigravity_hook.py", "codex_hook.py", "claude_visible_run.py", "vscode_hook.py"])
+    copy_dir(os.path.join(ROOT, "scripts"), os.path.join(PKG, "pc", "scripts"),
+             ["hook_health.py", "verify_connectivity.py"])
     # Docker / MCP Toolkit / 守护托盘
     copy_dir(os.path.join(ROOT, "docker"), os.path.join(PKG, "pc", "docker"),
              ["host-executor.py", "run_executor.ps1", "install_executor_task.ps1",
@@ -59,18 +63,29 @@ def main():
         '{\n'
         '  "ota_url": "https://YOUR_FUNNEL_DOMAIN.ts.net/xiaozhi/ota/",\n'
         '  "robot_mac": "AA:BB:CC:DD:EE:FF",\n'
-        '  "auth_token": "CHANGE_ME",\n'
+        '  "endpoint_health_url": "http://127.0.0.1:8004/mcp_endpoint/health?key=YOUR_HEALTH_KEY",\n'
+        '  "docker_container": "xiaozhi-esp32-server",\n'
+        '  "docker_log_lookback_minutes": 120,\n'
+        '  "auth_token": "YOUR_GATEWAY_TOKEN",\n'
         '  "allow_codex": true,\n  "allow_claude": true,\n'
         '  "codex_cli": "codex",\n  "claude_cli": "claude",\n'
         '  "max_output_chars": 4000,\n  "max_timeout_s": 600,\n'
         '  "http_host": "0.0.0.0",\n  "http_port": 8010,\n'
-        '  "push_api_url": "http://127.0.0.1:8003/api/push",\n'
-        '  "push_secret": "CHANGE_ME",\n  "push_interval_s": 5\n}\n'
+        '  "push_interval_s": 5,\n'
+        '  "push_direct_done": true,\n'
+        '  "push_mqtt_host": "broker-cn.emqx.io",\n  "push_mqtt_port": 1883,\n'
+        '  "push_topic_prefix": "stackchan",\n'
+        '  "push_tts_voice": "zh-HK-HiuMaanNeural",\n  "push_tts_rate": "+0%",\n'
+        '  "tts_cache_size": 200,\n'
+        '  "tts_fallback_model_dir": "tts_models/vits-cantonese-hf-xiaomaiiwn",\n'
+        '  "tts_fallback_speed": 1.0,\n'
+        '  "local_llm_host": "http://127.0.0.1:11434",\n  "local_llm_model": "qwen3.5:9b"\n}\n'
     )
 
     # README 主文档
     shutil.copy2(os.path.join(ROOT, "README.md"), os.path.join(PKG, "README.md"))
-    for name in ("prompt-阿松-v3.md", "prompt-阿松-v2.md", "MEMORY.md"):
+    for name in ("prompt-阿松-v3.md", "prompt-阿松-v2.md", "MEMORY.md",
+                 "CHANGELOG-08.10.md"):
         s = os.path.join(ROOT, name)
         if os.path.exists(s):
             shutil.copy2(s, os.path.join(PKG, name))

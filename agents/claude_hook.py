@@ -188,11 +188,15 @@ if __name__ == "__main__":
         ti = pr.get("tool_input") or data.get("tool_input") or {}
         detail = ""
         if isinstance(ti, dict):
-            for k in ("command", "file_path", "path", "url", "description", "query", "pattern", "prompt"):
+            for k in ("command", "file_path", "path", "url", "description", "query",
+                      "pattern", "prompt", "question", "plan", "message"):
                 v = ti.get(k)
                 if v not in (None, ""):
                     detail = " ".join(str(v).split())[:200]
                     break
-        summary = f"{tool}: {detail}".rstrip(": ") if detail else (tool or "需要确认")
+        if detail and tool in ("AskUserQuestion", "ExitPlanMode"):
+            summary = detail  # 只播具体问题/计划内容, 不念英文工具名
+        else:
+            summary = f"{tool}: {detail}".rstrip(": ") if detail else (tool or "需要确认")
         _post("question", summary, session_id)
     sys.exit(0)

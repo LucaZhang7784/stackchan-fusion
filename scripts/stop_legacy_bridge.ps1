@@ -1,4 +1,4 @@
-﻿# 停止旧 bridge.js (已废弃, 与融合网关并存会重复注册 codex 工具)
+# 停止旧 bridge.js (已废弃, 与融合网关并存会重复注册 codex 工具)
 param([switch]$Kill)
 $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*bridge.js*' }
 if (-not $procs) { Write-Host '未发现旧 bridge.js 进程'; exit 0 }

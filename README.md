@@ -3,6 +3,9 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.12（2026-08-12）：Codex 回复必播兜底（session_watcher 直读 transcript，续传会话
+> hooks 失效也必播）+ 确认/权限请求播报补全（AskUserQuestion/ExitPlanMode 念具体内容）+
+> 句尾 240ms 静音尾帧（吞字根治）+ watcher 心跳纳入 Hook 自检保固。
 > v08.10（2026-08-10）：播报规则 ≤50 字完整 / 超长 LLM 摘要 ≤50 字 + 语速归 1.0x +
 > 推送 QoS0→QoS1（公网丢帧吞字根治）；Trae 桌面端 hooks 接入研究（原生引擎，免企业账号）。
 > 修订：摘要保留完整结论 + Hook 自检与修复（托盘菜单 / 30 分钟周期 + 机器人告警）+
@@ -330,3 +333,4 @@ python scripts\verify_connectivity.py
 （`YOUR_*` / `AA:BB:CC:DD:EE:FF`）。真实值只存在于本机 `.env`、`config.json`、
 docker 配置。`.gitignore` 已忽略所有运行时敏感文件。
 部署时按 [DEPLOY.md](DEPLOY.md) 第 4 节逐项替换。
+

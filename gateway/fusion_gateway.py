@@ -241,7 +241,7 @@ def _tts_text(text: str, limit: int = 180) -> str:
     return t
 
 
-_FFMPEG = r"<PROJECT_ROOT>\tools\ffmpeg-9.0-essentials_build\bin\ffmpeg.exe"
+_FFMPEG = r"ffmpeg"
 _push_client: paho.Client | None = None
 
 # ---- 加固 2: ACK 送达闭环(固件收到 START 回发 stackchan/{mac}/ack) ----
@@ -529,7 +529,7 @@ _PUSH_BATCH_INTERVAL_S = 0.05  # 轻度节流防突发, 不影响实时性(480ms
 
 async def _edge_tts_mp3(text: str, out_path: str) -> None:
     _ensure_cfg()
-    comm = edge_tts.Communicate(text, CFG.get("push_tts_voice", "zh-CN-XiaoxiaoNeural"), rate=CFG.get("push_tts_rate", "+20%"))
+    comm = edge_tts.Communicate(text, CFG.get("push_tts_voice", "zh-CN-XiaoxiaoNeural"), rate=CFG.get("push_tts_rate", "+0%"))
     async for chunk in comm.stream():
         if chunk["type"] == "audio":
             with open(out_path, "ab") as f:
@@ -599,7 +599,7 @@ def _sherpa_tts_ulaw_frames(text: str) -> list[bytes]:
     -> 降到 16kHz -> µ-law, 切成 60ms 帧(960B/帧), 与 EdgeTTS 帧格式完全一致。"""
     tts = _sherpa_tts_get()
     # 语速 +10%: sherpa speed 1.0 偏慢(基准), 用户实测偏快已按基准+10%校准
-    audio = tts.generate(text, sid=0, speed=float(CFG.get("tts_fallback_speed", 1.1)))
+    audio = tts.generate(text, sid=0, speed=float(CFG.get("tts_fallback_speed", 1.0)))
     samples = getattr(audio, "samples", None)
     if samples is None or len(samples) == 0:
         raise RuntimeError("sherpa-onnx 粤语 TTS 无输出")
@@ -642,7 +642,7 @@ def _tts_ulaw_frames(text: str) -> list[bytes]:
     edge_err: Exception | None = None
     # EdgeTTS 中途断流防护: 实测时长 < 期望(字数×200ms)的 55% 视为截断, 重试一次
     expected_ms = max(1, len(text)) * 200
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             mp3 = os.path.join(tempfile.gettempdir(), "fusion_push_tts.mp3")
             if os.path.exists(mp3):
@@ -666,9 +666,13 @@ def _tts_ulaw_frames(text: str) -> list[bytes]:
             if attempt == 0:
                 log(f"EdgeTTS 合成异常/截断, 重试: {e}")
     if not frames:
-        # EdgeTTS 失败/空音频/截断 -> 本地粤语兜底, 保证内容完整且能播报
+        # EdgeTTS 失败/空音频/截断 -> 本地粤语兜底; 兜底也失败则明确报错(保留 pending 供补播)
         log(f"EdgeTTS 不可用/截断({edge_err}), 回退本地粤语 TTS: {text[:60]}")
-        frames = _sherpa_tts_ulaw_frames(text)
+        try:
+            frames = _sherpa_tts_ulaw_frames(text)
+        except Exception as e:
+            log(f"本地 TTS 兜底失败: {e}")
+            raise RuntimeError(f"TTS 全部失败(EdgeTTS 截断 + 本地兜底崩溃): {e}") from e
     if not frames:
         raise RuntimeError("TTS 无音频输出")
     _tts_cache_put(key, frames)
@@ -785,6 +789,24 @@ def _hook_health_loop() -> None:
         time.sleep(_HOOK_HEALTH_INTERVAL_S)
 
 
+def _session_watcher_loop() -> None:
+    """Codex transcript 兜底监听: 每 5s 扫描, 钩子失效会话(如重启后续传会话)
+    的轮次完成后自动推送到网关, 保证 Codex 回复必播(与钩子防双播)。"""
+    sys.path.append(str(Path(__file__).resolve().parent.parent / "scripts"))
+    try:
+        import session_watcher
+    except Exception as e:
+        log(f"session_watcher 导入失败: {e}")
+        return
+    while True:
+        try:
+            for d in session_watcher.scan_and_broadcast():
+                log(f"session_watcher: {d}")
+        except Exception as e:
+            log(f"session_watcher 异常: {e}")
+        time.sleep(5)
+
+
 def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str, float, str]:
     """MQTT 主动推送: EdgeTTS 合成 -> 16k µ-law 60ms 帧 -> stackchan/{mac}/push。
     指标 3: 语音推流 ≤60 字口语化摘要(轨二 LLM 提炼, 失败降级截断); 完整原文由调用方保留在
@@ -801,6 +823,10 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
         # 先合成全部 µ-law 帧, 再发 START: 严禁机器人先进 Speaking 空等 TTS
         # (否则 3s 断流看门狗会误判为断流, 把帧全部丢弃 = 播报被掐掉)
         frames = _tts_ulaw_frames(text)
+        # 句尾追加 240ms µ-law 静音缓冲帧(0xFF=静音): 确保最后一个词在硬件 DMA
+        # 中完全发声后再发 STOP, 根治句尾吞字。
+        silence_frame = b"\xff" * _PUSH_FRAME_BYTES
+        frames.extend([silence_frame] * 4)
         # QoS1 + 2帧/条批量: 每批 ~1922B; 固件订阅 QoS1, 公网 EMQX 丢包/断连时 broker 重投,
         # 根治 QoS0 静默丢帧导致的播报吞字(ACK 只证明 START 到达, 音频帧必须靠 QoS1 保送达)
         if msg_uid and action:
@@ -1347,7 +1373,7 @@ def main() -> None:
         from mcp.server.transport_security import TransportSecuritySettings
         mcp.settings.transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "<TAILSCALE_IP>:*"],
+            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "YOUR_TAILSCALE_IP:*"],
         )
     except Exception as e:
         log(f"transport security config error: {e}")
@@ -1355,6 +1381,7 @@ def main() -> None:
     threading.Thread(target=_push_worker, daemon=True).start()  # 单 Worker 串行推流(指标 1)
     threading.Thread(target=_prewarm_local_llm, daemon=True).start()  # 预热本地 LLM, 首次长文本摘要不降级截断
     threading.Thread(target=_hook_health_loop, daemon=True).start()  # 5 分钟周期自检(hook 配置漂移自动修复+告警)
+    threading.Thread(target=_session_watcher_loop, daemon=True).start()  # Codex transcript 兜底播报
     if int(CFG.get("push_interval_s", 5) or 0) > 0:
         threading.Thread(target=_push_loop, daemon=True).start()
 

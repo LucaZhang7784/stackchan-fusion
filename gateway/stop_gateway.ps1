@@ -1,4 +1,4 @@
-﻿$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pidFile = Join-Path $root 'state\gateway.pid'
 if (Test-Path -LiteralPath $pidFile) {
   $id = [int](Get-Content -LiteralPath $pidFile)

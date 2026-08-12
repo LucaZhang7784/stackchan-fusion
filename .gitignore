@@ -25,3 +25,6 @@ backup-*/
 firmware/**/xiaozhi.bin
 firmware/**/xiaozhi.elf
 firmware/**/merged-binary.bin
+
+# 本地 TTS 模型(可下载运行时产物, 不入库)
+gateway/tts_models/

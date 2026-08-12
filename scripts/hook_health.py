@@ -47,6 +47,8 @@ ANTIGRAVITY_HOOK_LOG = ROOT / "gateway" / "state" / "antigravity_hook.log"
 LANGUAGE_SERVER_LOG = APPDATA_DIR / "Antigravity" / "logs" / "language_server.log"
 HEARTBEAT_STALE_H = 6        # antigravity_hook.log 超过 6h 无写入视为"未触发"(可调)
 ACTIVITY_WINDOW_MIN = 60     # 近 60 分钟有"真实会话"(brain transcript 更新)才算"有交互"
+WATCHER_STATE = ROOT / "gateway" / "state" / "session_watcher.state.json"
+WATCHER_STALE_S = 120        # session_watcher 状态文件超过 120s 无更新视为线程已停
 
 AGENTS_LIST = ["antigravity", "codex", "claude", "vscode"]
 HOOK_SCRIPTS = ["antigravity_hook.py", "codex_hook.py", "claude_hook.py", "vscode_hook.py"]
@@ -206,7 +208,7 @@ def check_antigravity() -> str:
     if not ANTIGRAVITY_HOOKS.exists():
         return f"缺少 {ANTIGRAVITY_HOOKS}"
     try:
-        d = json.loads(ANTIGRAVITY_HOOKS.read_text(encoding="utf-8"))
+        d = json.loads(ANTIGRAVITY_HOOKS.read_text(encoding="utf-8-sig"))
     except Exception as e:
         return f"Antigravity hooks.json 解析失败: {e}"
     sc = d.get("stackchan")
@@ -244,7 +246,7 @@ def check_claude() -> str:
     if not CLAUDE_SETTINGS.exists():
         return f"缺少 {CLAUDE_SETTINGS}"
     try:
-        d = json.loads(CLAUDE_SETTINGS.read_text(encoding="utf-8"))
+        d = json.loads(CLAUDE_SETTINGS.read_text(encoding="utf-8-sig"))
     except Exception as e:
         return f"Claude settings.json 解析失败: {e}"
     hooks = d.get("hooks") or {}
@@ -282,7 +284,7 @@ def check_codex() -> str:
     if not CODEX_HOOKS.exists():
         return f"缺少 {CODEX_HOOKS}"
     try:
-        d = json.loads(CODEX_HOOKS.read_text(encoding="utf-8"))
+        d = json.loads(CODEX_HOOKS.read_text(encoding="utf-8-sig"))
     except Exception as e:
         return f"Codex hooks.json 解析失败: {e}"
     hooks = d.get("hooks") or {}
@@ -332,6 +334,25 @@ def check_scripts() -> list[str]:
     return issues
 
 
+def check_watcher() -> str:
+    """session_watcher 兜底监听器保固: 脚本语法 + 网关内 watcher 线程心跳。
+
+    watcher 每 ~5s 写一次状态文件; 超过 WATCHER_STALE_S 无更新说明线程已停,
+    Codex 续传会话的 transcript 兜底播报会失效, 必须尽早告警。"""
+    ws = ROOT / "scripts" / "session_watcher.py"
+    if ws.exists():
+        r = subprocess.run([*PY.split(), "-m", "py_compile", str(ws)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return f"session_watcher.py 语法错误: {(r.stderr or r.stdout)[:150]}"
+    if not WATCHER_STATE.exists():
+        return "session_watcher 状态文件缺失(网关 watcher 线程未运行)"
+    age = time.time() - WATCHER_STATE.stat().st_mtime
+    if age > WATCHER_STALE_S:
+        return f"session_watcher 心跳过期(最后写入 {age:.0f}s 前, watcher 可能已停)"
+    return ""
+
+
 def selftest() -> tuple[int, str]:
     """向网关 POST progress(不播报)验证 hook->网关 通路; 返回 (成功数, 摘要)。"""
     if not _gateway_ok():
@@ -372,6 +393,9 @@ def main() -> int:
 
     script_issues = check_scripts()
     issues.extend(script_issues)
+    watcher_r = check_watcher()
+    if watcher_r:
+        issues.append(watcher_r)
 
     # Antigravity loader 真实状态(尾部读取, 防全量扫描大日志)
     ls = antigravity_loader_status()

@@ -528,8 +528,17 @@ def _push_worker() -> None:
             item = _push_queue.get()
             if not robot_attached():
                 # 本机未连接机器人(多机共用配置): 消息保留不回丢, 连接后自动补推
-                _push_queue.put(item)
+                if item.get("kind") != "ping":
+                    _push_queue.put(item)
                 time.sleep(2)
+                continue
+            if item.get("kind") == "ping":
+                # 静默探活: START(action=ping, 空文本) + STOP, 固件收到 START 即回 ACK
+                uid = str(item.get("id") or f"ping-{int(time.time())}")
+                if _robot_ping_send(uid):
+                    log(f"robot ping ack {uid}")
+                else:
+                    log(f"robot ping no-ack {uid}")
                 continue
             text = item.get("text", "")
             record_id = item.get("id", "")
@@ -939,6 +948,31 @@ def _drain_pending() -> tuple[int, int]:
         _enqueue_push(text, "pending", "pending", o.get("id", ""), str(o.get("action") or ""))
         enqueued += 1
     return enqueued, 0
+
+
+def _robot_ping_send(uid: str) -> bool:
+    """静默探活: 发 START(action=ping, 空文本) + STOP; 固件收到 START 即回 ACK。
+    走 worker 队列串行执行, 不与真实播报并发冲突。"""
+    try:
+        client = _push_mqtt()
+        topic = f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/push"
+        client.publish(topic, b"\x01" + uid.encode("utf-8") + b"\x00ping\x00", qos=1)
+        client.publish(topic, b"\x03", qos=1)
+        return _wait_ack(uid, 4.0)
+    except Exception:
+        return False
+
+
+def _robot_ping_loop() -> None:
+    """每 5 分钟静默探活一次(本机已连接时), 供托盘判断机器人本体在线/离线。"""
+    while True:
+        try:
+            if robot_attached():
+                uid = f"ping-{int(time.time())}"
+                _push_queue.put({"text": "", "source": "ping", "kind": "ping", "id": uid, "action": "ping"})
+        except Exception:
+            pass
+        time.sleep(300)
 
 
 def _push_loop() -> None:
@@ -1466,6 +1500,7 @@ def main() -> None:
         log(f"transport security config error: {e}")
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
     threading.Thread(target=_push_worker, daemon=True).start()  # 单 Worker 串行推流(指标 1)
+    threading.Thread(target=_robot_ping_loop, daemon=True).start()  # 每 5 分钟静默探活(托盘判断机器人在线)
     threading.Thread(target=_prewarm_local_llm, daemon=True).start()  # 预热本地 LLM, 首次长文本摘要不降级截断
     threading.Thread(target=_hook_health_loop, daemon=True).start()  # 5 分钟周期自检(hook 配置漂移自动修复+告警)
     threading.Thread(target=_session_watcher_loop, daemon=True).start()  # Codex transcript 兜底播报

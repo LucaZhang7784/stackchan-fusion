@@ -97,3 +97,26 @@
 
 - 采集器为独立进程（规避 PS 5.1 线程池无 Runspace 的崩溃）；托盘退出时按
   `state/tray_collector.pid` 停止采集器。
+
+## v08.16（2026-08-13）：托盘图标状态映射 + 机器人探活 + 开关即时刷新
+
+### 1. 图标状态映射（机器人离线=红，MCP/Hook 故障=黄）
+
+- 采集器新增 `robotOnline`（机器人本体在线判定）与 `hookFault`（Hook 自检异常判定），
+  状态优先级：网关离线/机器人离线 → 红；MCP 异常或 Hook 异常 → 黄；全好 → 绿。
+- 模拟验证：注入 `hook_health.last.txt=存在异常` → `state=warn`（黄）；恢复后回 `ok`。
+
+### 2. 机器人静默探活（gateway/fusion_gateway.py）
+
+- 新增 `_robot_ping_loop`：本机已连接时每 5 分钟发一次静默 ping
+  （START action=ping 空文本 + STOP，走 worker 队列串行不打断播报），
+  固件收到 START 即回 ACK → 日志 `robot ping ack/no-ack`；
+- 采集器据最近一次探活/播报结果判定机器人本体在线/离线（无记录默认在线）；
+- 实测：`_robot_ping_send` 返回 ack=True（机器人在线）。
+
+### 3. 连接开关即时刷新（gateway/fusion_tray.ps1）
+
+- 点击开关成功后 `attachOverride` 本地立即生效 + 强制下个 UI 周期重建菜单
+  （不再等最长 5 秒采集周期）；采集器确认后自动清除覆盖；
+- 机器人链路子菜单新增：`机器人本体: 在线/离线`、`本机连接: 已连接/已断开`、
+  `Hook 自检: 正常/存在异常` —— 断开本机连接时机器人本体状态仍清晰可见。

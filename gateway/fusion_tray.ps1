@@ -685,11 +685,12 @@ function Update-Status-Legacy {
 # ---------------------------------------------------------------- 新菜单(缓存驱动, 状态变化才重建)
 function Build-Menu {
     $s = $script:status
+    $attached = if ($null -ne $script:attachOverride) { $script:attachOverride } else { $s.attached }
     $script:menu.Items.Clear()
 
     # 状态头
     $head = New-Object System.Windows.Forms.ToolStripMenuItem
-    $head.Text = "StackChan Fusion  $(if($s.attached){'● 已连接'}else{'○ 已断开'})  [$($s.label)]  $(Get-Date -Format 'HH:mm:ss')"
+    $head.Text = "StackChan Fusion  $(if($attached){'● 已连接'}else{'○ 已断开'})  [$($s.label)]  $(Get-Date -Format 'HH:mm:ss')"
     $head.Enabled = $false
     $head.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9, [System.Drawing.FontStyle]::Bold)
     $script:menu.Items.Add($head) | Out-Null
@@ -697,8 +698,8 @@ function Build-Menu {
 
     # 连接开关(多机共用配置: 只保留一台连接机器人)
     $itemAttach = New-Object System.Windows.Forms.ToolStripMenuItem
-    $itemAttach.Text = if ($s.attached) { '连接机器人  ☑ 已连接' } else { '连接机器人  ☐ 已断开' }
-    $itemAttach.Checked = $s.attached
+    $itemAttach.Text = if ($attached) { '连接机器人  ☑ 已连接' } else { '连接机器人  ☐ 已断开' }
+    $itemAttach.Checked = $attached
     $itemAttach.ToolTipText = '多机共用同一配置时只保留一台连接; 断开期间消息入队不推流, 连接后自动补推。'
     $itemAttach.Add_Click({
         $cur = Get-CurrentStatus
@@ -714,6 +715,8 @@ function Build-Menu {
         $done = {
             param($out)
             if ($out -match '^attached=') {
+                $script:attachOverride = ($out -match 'attached=True')
+                $script:lastSig = ''  # 强制下个 UI 周期立即重建菜单
                 [System.Windows.Forms.MessageBox]::Show("已切换: $($out.Trim())`n断开期间消息保留, 连接后自动补推。", '连接机器人', 'OK', 'Information') | Out-Null
             } else {
                 [System.Windows.Forms.MessageBox]::Show($out.Trim(), '连接机器人', 'OK', 'Error') | Out-Null
@@ -741,8 +744,11 @@ function Build-Menu {
 
     # 机器人链路
     $robotMenu = New-Object System.Windows.Forms.ToolStripMenuItem
-    $robotMenu.Text = "机器人链路  $(if($s.lastPush){'● 播报正常'}else{'○ 暂无推送'})"
+    $robotMenu.Text = "机器人链路  $(if($s.robotOnline){'● 在线'}else{'○ 离线'})"
+    Add-StatusItem $robotMenu "机器人本体:" $(if($s.robotOnline){'在线'}else{'离线(最近无 ACK)'}) $(if($s.robotOnline){'ok'}else{'bad'})
+    Add-StatusItem $robotMenu "本机连接:" $(if($attached){'已连接'}else{'已断开'}) $(if($attached){'ok'}else{'warn'})
     Add-StatusItem $robotMenu "最近推送:" $(if($s.lastPush){$s.lastPush}else{'暂无'}) $(if($s.lastPush){'ok'}else{'warn'})
+    Add-StatusItem $robotMenu "Hook 自检:" $(if($s.hookFault){'存在异常'}else{'正常'}) $(if($s.hookFault){'bad'}else{'ok'})
     Add-StatusItem $robotMenu "云桥接(备用):" "$($s.bridgeProc) 个进程" $(if($s.bridgeProc -ge 1){'ok'}else{'warn'})
     $hbBadge = if ($s.hbMin -ge 0 -and $s.hbMin -le 3) { 'ok' } elseif ($s.hbMin -ge 0) { 'warn' } else { 'bad' }
     Add-StatusItem $robotMenu "云心跳:" $(if($s.hbMin -ge 0){"$($s.hbMin) 分钟前"}else{'无'}) $hbBadge
@@ -889,16 +895,19 @@ function Update-Status {
     if (-not $s) {
         $s = @{ state = 'bad'; label = '采集器未运行'; gwOk = $false; mcpOk = $false; robotOk = $false
                 gwPid = 0; tools = 0; pending = 0; events = 0; confirm = 0; total = 0
-                lastPush = ''; lastCall = ''; bridgeProc = 0; hbMin = -1; attached = $true; detail = '状态采集器未运行, 请重启托盘。' }
+                lastPush = ''; lastCall = ''; bridgeProc = 0; hbMin = -1; attached = $true
+                robotOnline = $true; hookFault = $false; detail = '状态采集器未运行, 请重启托盘。' }
     }
-    $sig = "$($s.state)|$($s.gwPid)|$($s.pending)|$($s.events)|$($s.confirm)|$($s.attached)|$($s.lastPush)|$($s.hbMin)|$($null -ne $script:busyJob)"
+    $attached = if ($null -ne $script:attachOverride) { $script:attachOverride } else { $s.attached }
+    if ($null -ne $script:attachOverride -and $s.attached -eq $script:attachOverride) { $script:attachOverride = $null }
+    $sig = "$($s.state)|$($s.gwPid)|$($s.pending)|$($s.events)|$($s.confirm)|$attached|$($s.lastPush)|$($s.hbMin)|$($s.robotOnline)|$($s.hookFault)|$($null -ne $script:busyJob)"
     try {
         $iconKey = "$($s.state)|$($s.gwOk)|$($s.mcpOk)|$($s.robotOk)"
         if ($script:lastIconKey -ne $iconKey) {
             $script:lastIconKey = $iconKey
             $script:notify.Icon = Get-StatusIcon $s.state $s.gwOk $s.mcpOk $s.robotOk
         }
-        $tooltip = "StackChan Fusion [$($s.label)]`n网关:$(if($s.gwOk){'在线'}else{'离线'}) MCP:$(if($s.mcpOk){'正常'}else{'异常'}) 机器人:$(if($s.robotOk){'在线'}else{'离线'})`n连接:$(if($s.attached){'已连接'}else{'已断开'}) 队列:$($s.pending)"
+        $tooltip = "StackChan Fusion [$($s.label)]`n网关:$(if($s.gwOk){'在线'}else{'离线'}) MCP:$(if($s.mcpOk){'正常'}else{'异常'}) 机器人:$(if($s.robotOnline){'在线'}else{'离线'})`n连接:$(if($attached){'已连接'}else{'已断开'}) 队列:$($s.pending)"
         if ($script:notify.Text -ne $tooltip) { $script:notify.Text = $tooltip }
         if ($sig -ne $script:lastSig) {
             $script:lastSig = $sig
@@ -941,6 +950,7 @@ $script:timer.Start()
 $script:lastIconKey = ''
 $script:lastSig = ''
 $script:lastState = ''
+$script:attachOverride = $null
 
 function Start-Collector {
     $collector = Join-Path $root 'tray_collector.ps1'

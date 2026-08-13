@@ -9,7 +9,8 @@
 防双播:
   1) 某会话近期(codex_hook.log 15 分钟内)有 `posted done ok codex_{session8}` 记录
      -> 判定该会话钩子正常, 监听器跳过(避免与钩子双播);
-  2) msg_uid = watcher-<turn_id> 状态去重。
+  2) 按 轮次+文本哈希 去重: 同一轮文本变化(评论->最终回复)允许再播一次,
+     msg_uid = watcher-<turn_id>-<hash8> 保证最终回复必播、内容相同的重复不播。
 
 用法:
   py session_watcher.py --dry-run   # 只打印将广播的内容, 不发网络请求
@@ -18,6 +19,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sys
@@ -76,11 +78,14 @@ def _save_state(st: dict) -> None:
         pass
 
 
-def _post_done(summary: str, turn_id: str) -> bool:
+def _post_done(summary: str, turn_id: str, text_hash: str = "") -> bool:
+    uid = f"watcher-{turn_id}"
+    if text_hash:
+        uid += "-" + text_hash[:8]
     body = json.dumps({
         "agent": "codex", "event": "done",
         "summary": summary[:200], "session_id": "watcher",
-        "msg_uid": f"watcher-{turn_id}",
+        "msg_uid": uid,
     }, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         GATEWAY_URL + "/api/agent_event", data=body,
@@ -211,13 +216,14 @@ def scan_and_broadcast(dry_run: bool = False) -> list[str]:
         pending_all = [p for p in pending_all if not _hook_recently_posted(p[0])]
 
     for _session8, turn, text in pending_all:
-        if turn in broadcast:
+        h = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if broadcast.get(turn) == h:
             continue
         if dry_run:
             done.append(f"[dry-run] turn={turn[:8]} text={text[:60]}")
-            broadcast[turn] = text[:50]
-        elif _post_done(text, turn):
-            broadcast[turn] = text[:50]
+            broadcast[turn] = h
+        elif _post_done(text, turn, h):
+            broadcast[turn] = h
             done.append(f"posted {turn[:8]}: {text[:50]}")
     _save_state(st)
     return done

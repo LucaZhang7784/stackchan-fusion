@@ -59,3 +59,41 @@
      把重播吞掉（不同文本必然不同 msg_uid）；
   3) 保留新轮次触发 + 25 秒静默兜底。
 - **单测**：同轮同文本去重、不同文本放行；msg_uid 随文本变化。
+
+## v08.15（2026-08-13）：托盘性能优化 + UI 重设计 + 连接开关
+
+### 1. 卡顿根治（gateway/fusion_tray.ps1 + 新增 gateway/tray_collector.ps1）
+
+- **根因**：旧托盘把所有状态采集（healthz / docker mcp / WMI 进程 / 23MB 日志尾读）
+  跑在 WinForms UI 线程，且每 5 秒全量重建菜单；慢操作（安装 Hooks、Hook 自检）
+  还同步执行，点击后界面冻结数秒。
+- **修复**：
+  1) 状态采集移入**独立采集器进程**（tray_collector.ps1），每 5s 写
+     `state/tray_status.json`；托盘 UI 只读该 JSON（≤20s 新鲜度），点击/开菜单即时响应；
+  2) 菜单**仅在状态变化时重建**（签名比对），消除每 5 秒全量刷新卡顿与闪烁；
+  3) 慢操作（连接开关 / Hook 自检 / 安装 Claude Hooks）改 **Start-Job 后台执行** +
+     气球提示"运行中…"，完成后弹结果，UI 不再冻结；
+  4) 单项提速：docker profile 30s 缓存；gateway.log 改文件流尾部 seek 读；
+     修正 Get-CloudRobot 匹配 `push ok` → `push ack`（旧逻辑永远显示"暂无推送"）。
+
+### 2. 界面优化（参考 Syncthing / Docker Desktop / Tailscale 托盘风格）
+
+- 顶部状态头：`StackChan Fusion ● 已连接 [全部正常] HH:mm:ss`（彩色圆点 + 摘要）；
+- 状态头正下方是**连接开关**（勾选态 ☑/☐，带提示）；
+- 分组：Gateway / MCP / 机器人链路 / 播报队列 → 操作（队列操作 / Hook 自检 /
+  安装 Claude Hooks / 重启网关）→ 退出；只读信息行带 ok/warn/bad 徽章配色。
+
+### 3. 本机 ⇄ 机器人 连接开关（多机共用同一配置）
+
+- 网关新增 `POST /api/robot_attach {"attached": bool}`，持久化到
+  `state/robot_attached.json`（重启保持），`healthz` 返回 `attached`；
+- `_push_worker` / `_drain_pending` 门禁：**断开时消息照常入 pending 队列但不推
+  MQTT**，连接后 5s 内 `_push_loop` 自动补推（不丢消息、不双机抢播）；
+- 托盘开关点击即调接口；图标/状态头/提示同步显示已连接/已断开；
+- 真机验证（18:35）：断开→测试消息 8s 仍停留 pending 未推；连接→7s 内补推
+  `push ack [agent]`。
+
+### 已知取舍
+
+- 采集器为独立进程（规避 PS 5.1 线程池无 Runspace 的崩溃）；托盘退出时按
+  `state/tray_collector.pid` 停止采集器。

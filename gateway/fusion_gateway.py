@@ -95,6 +95,43 @@ STARTED_AT = time.time()
 PENDING_TTL_SECONDS = 300  # Phase 7.1: 待播报消息 5 分钟 TTL, 根治开机/重启后倒灌旧消息
 CFG: dict = {}
 
+# ---- 本机 ⇄ 机器人 连接开关(2026-08-13): 多台电脑共用同一配置时, 只有 attached 的
+# 那台才向机器人推流; 断开时消息照常进 pending 队列不丢, 连接后 5s 内自动补推。----
+_ROBOT_ATTACH_FILE = Path(__file__).resolve().parent / "state" / "robot_attached.json"
+_robot_attached = True
+_attach_lock = threading.Lock()
+
+
+def _load_robot_attached() -> bool:
+    try:
+        if _ROBOT_ATTACH_FILE.exists():
+            return bool(json.loads(_ROBOT_ATTACH_FILE.read_text(encoding="utf-8")).get("attached", True))
+    except Exception:
+        pass
+    return True
+
+
+def robot_attached() -> bool:
+    with _attach_lock:
+        return _robot_attached
+
+
+def set_robot_attached(v: bool) -> bool:
+    global _robot_attached
+    v = bool(v)
+    with _attach_lock:
+        _robot_attached = v
+        try:
+            _ROBOT_ATTACH_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _ROBOT_ATTACH_FILE.write_text(json.dumps({"attached": v}, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+    log(f"robot attached -> {v}")
+    return v
+
+
+_robot_attached = _load_robot_attached()
+
 
 def _ensure_cfg() -> None:
     """模块级 CFG 在 import 时未初始化(仅在 __main__ 加载), 直接调用工具会
@@ -489,6 +526,11 @@ def _push_worker() -> None:
     while True:
         try:
             item = _push_queue.get()
+            if not robot_attached():
+                # 本机未连接机器人(多机共用配置): 消息保留不回丢, 连接后自动补推
+                _push_queue.put(item)
+                time.sleep(2)
+                continue
             text = item.get("text", "")
             record_id = item.get("id", "")
             kind = item.get("kind", "pending")
@@ -880,6 +922,8 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
 def _drain_pending() -> tuple[int, int]:
     """把待播报消息统一入队(单 Worker 串行推流); 返回 (入队数, 失败数)。
     同一 record_id 去重, 由 Worker 推送成功后移除; 失败保留供唤醒补播。"""
+    if not robot_attached():
+        return 0, 0  # 断开期间不入队, 连接后由 _push_loop 自动补推
     items = pending_items()
     enqueued = 0
     now = time.time()
@@ -1268,8 +1312,20 @@ def build_http_app():
             "pid": os.getpid(),
             "started_at": _PROC_START,
             "pending": pending_count(),
+            "attached": robot_attached(),
             "tools": TOOL_NAMES,
         })
+
+    async def robot_attach(request):
+        """本机 ⇄ 机器人 连接开关: POST {"attached": true|false}。
+        断开: 消息继续入 pending 队列但不推 MQTT; 连接: 5s 内自动补推。"""
+        try:
+            data = await request.json()
+        except Exception:
+            return JSONResponse({"error": "bad json"}, status_code=400)
+        v = bool(data.get("attached"))
+        set_robot_attached(v)
+        return JSONResponse({"ok": True, "attached": robot_attached(), "pending": pending_count()})
 
     async def agent_event(request):
         """agent hook/包装器上报事件: {agent, event: done|question|progress|error, summary, session_id, reply_file}"""
@@ -1342,6 +1398,7 @@ def build_http_app():
 
     app = Starlette(routes=[
         Route("/healthz", healthz),
+        Route("/api/robot_attach", robot_attach, methods=["POST"]),
         Route("/api/agent_event", agent_event, methods=["POST"]),
         Route("/api/agent/confirm_status", confirm_status),
         Mount("/", app=mcp_app),

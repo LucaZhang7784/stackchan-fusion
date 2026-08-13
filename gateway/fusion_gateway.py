@@ -679,24 +679,54 @@ def _tts_ulaw_frames(text: str) -> list[bytes]:
     return frames
 
 
+_DEGENERATE_SUMMARIES = {
+    "任务完成", "任务已完成", "项目完成", "项目已完成", "已完成", "完成", "完成啦",
+    "搞定", "搞定了", "完毕", "好的", "好", "收到", "知道了", "明白", "好的收到",
+    "ok", "okay", "嗯",
+}
+
+
+def _is_degenerate_summary(s: str) -> bool:
+    """LLM 摘要退化判定: 过短或只回框架词/无具体内容时判为退化, 丢弃改用尾部结论提取。"""
+    t = str(s or "").strip().strip("。.！!？? ")
+    if len(t) <= 2:
+        return True
+    return t in _DEGENERATE_SUMMARIES or t.startswith("任务完成")
+
+
 def _summarize_for_speech(text: str, max_chars: int = 50) -> str:
     """轨二(吞字根治): 长文本 LLM 口语化摘要, 送入 TTS 引擎前调用。
     len(text) > max_chars 时用本地 LLM(Ollama)提炼为 ≤max_chars 字的口语化摘要;
     【摘要必须包含原文的完整结论】(根因/结果/决定), 可省略过程细节;
     LLM 不可用/超时/输出异常时降级为尾部结论句提取(结论一般在结尾),
-    保证推流永不卡死且不丢结论。"""
+    保证推流永不卡死且不丢结论。
+
+    v08.14(2026-08-13): 框架(agent 任务完成/出错/需要确认)与正文分离——
+    框架永远保留并拼回, LLM 只对正文做摘要; LLM 输出做退化校验
+    (只回"任务完成/好的"等无内容框架词时丢弃, 改尾部结论提取),
+    杜绝"只播完成、丢内容"与摘要吞前缀。"""
     text = str(text or "").strip()
+    prefix = ""
+    m = re.match(
+        r"^([A-Za-z0-9_\u4e00-\u9fff]+ (?:任务完成|出错|需要确认))[:：]\s*(.*)$",
+        text, re.S)
+    if m:
+        prefix = m.group(1) + ": "
+        text = m.group(2).strip()
+    if not text:
+        return prefix.rstrip(":： ")
     if len(text) <= max_chars:
-        return text
+        return prefix + text
     host = str(CFG.get("local_llm_host", "http://127.0.0.1:11434"))
     models = [str(CFG.get("local_llm_model", "qwen3.5:9b"))]
     for m in ("qwen3.5:9b", "gemma4:12b"):
         if m not in models:
             models.append(m)
     prompt = (
-        f"这是要播报给用户的任务完成消息，请提炼成不超过 {max_chars} 个字的口语化中文摘要。"
-        f"【必须包含完整结论】：摘要必须完整保留原文的最终结论（根因/结果/决定），"
-        "可以省略推理过程与中间细节。只输出摘要正文，不要引号、不要markdown、不要任何解释。\n\n"
+        f"这是要播报给用户的 agent 任务完成消息正文，请提炼成不超过 {max_chars} 个字的口语化中文摘要。"
+        f"硬性要求：1) 必须包含原文的具体内容与最终结论（做了什么/结果是什么/决定是什么），"
+        "严禁只输出'任务完成''已完成''好的'等无内容框架词；2) 保留关键数字与专有名词；"
+        "3) 口语自然，适合朗读。只输出摘要正文，不要引号、不要markdown、不要任何解释。\n\n"
         f"原文：{text[:800]}"
     )
     for model in models:
@@ -716,11 +746,11 @@ def _summarize_for_speech(text: str, max_chars: int = 50) -> str:
             if not content:
                 content = str((out.get("message") or {}).get("thinking") or "").strip()
             content = " ".join(content.split()).strip().strip('"“”「」\'')
-            if content and len(content) <= max_chars + 10:
-                return content[:max_chars]
+            if content and len(content) <= max_chars + 10 and not _is_degenerate_summary(content):
+                return prefix + content[:max_chars]
         except Exception:
             continue
-    return _conclusion_fallback(text, max_chars)
+    return prefix + _conclusion_fallback(text, max_chars)
 
 
 def _conclusion_fallback(text: str, max_chars: int) -> str:

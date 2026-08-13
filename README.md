@@ -3,6 +3,9 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.13（2026-08-13）：配网误入根治——连接超时 10s→20s（覆盖间歇性 DHCP 慢/丢包，
+> radio 已连上不再被误杀进配网）+ 进配网不再清空 SSID + 移除 3 次失败自动清空；
+> 异地仍可开机单击/长按进配网，新旧 WiFi 并存自动重连。
 > v08.12（2026-08-12）：Codex 回复必播兜底（session_watcher 直读 transcript，续传会话
 > hooks 失效也必播）+ 确认/权限请求播报补全（AskUserQuestion/ExitPlanMode 念具体内容）+
 > 句尾 240ms 静音尾帧（吞字根治）+ watcher 心跳纳入 Hook 自检保固。

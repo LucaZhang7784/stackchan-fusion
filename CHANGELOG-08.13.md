@@ -163,3 +163,23 @@
   （含确认回执 已允许/已拒绝）。
 - **真机验证（08-15）**：短消息（28 字 ≈6s）完整播报；超长消息摘要 67 字 ≈14.9s，
   关键信息（EMQX/QoS1/G 盘/87MB/粤语女声）全部保留。
+
+## v08.20（2026-08-15）：接入 DeepSeek Harness（dsh）
+
+- **背景**：本机已安装 DeepSeek 官方开源 agent harness（`C:\Users\<USER>\deepseek-harness`，
+  v0.1.0-rc.5，Web UI 于 127.0.0.1:3080）。调研确认：有无头 CLI
+  （`dsh --profile headless "任务"`，stdout 输出最终助手文本）；无桌面 hooks 体系；
+  会话以 zstd 压缩事件流存于 `~/.dsh/sessions/**/session.jsonl.zstd`。
+- **机器人语音派发（gateway/agents_core.py）**：注册 `deepseek` agent
+  （cli=pnpm dsh --profile headless，workdir=~/deepseek-harness）+ 可见窗口
+  `DeepSeek-Asong`；别名 deepseek/dsh/深寻/深度求索。机器人说"让 deepseek 做 X" →
+  headless 执行 → 结果经 MCP 语音返回。实测 `只回复四个字: 测试成功` → "测试成功"。
+- **Web 会话兜底播报（新增 scripts/dsh_session_watcher.py）**：zstd 流式解码，
+  提取每轮最终 assistant/message 文本，`turn/end` 时上报 done → 机器人播报 +
+  Windows 通知；跳过 cwd=deepseek-harness 的 headless 会话（结果已走 MCP 语音，
+  防双播）；按 轮次+文本哈希 去重（msg_uid=dshwatch-<session8>-<turn>-<hash8>）。
+- **网关集成**：新增 `_dsh_watcher_loop` 后台线程（20s 周期）；
+  agent_event 白名单按 AGENT_CLIS 自动放行 deepseek（done/error/question 全部触发
+  播报+通知）。依赖 `zstandard` 已加入 requirements.txt。
+- **真机验证（08-15）**：合成 Web 会话 turn/end → `posted test-a13 turn=1` →
+  `push ack [agent]: deepseek 任务完成: …` + Windows 通知；headless 会话正确跳过。

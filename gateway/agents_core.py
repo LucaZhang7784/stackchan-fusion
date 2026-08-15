@@ -266,6 +266,10 @@ AGENT_CLIS: dict = {
     "claude": {"cli": "claude", "exec_args": ["-p"], "version_args": ["--version"], "workdir": str(Path.home())},
     "codex": {"cli": "codex", "exec_args": ["exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust"],
               "version_args": ["--version"], "workdir": str(ROOT)},
+    "deepseek": {"cli": "pnpm",
+                 "exec_args": ["dsh", "--profile", "headless"],
+                 "version_args": ["dsh", "--version"],
+                 "workdir": str(Path.home() / "deepseek-harness")},
     "agy": {"cli": "agy", "exec_args": ["--print"], "version_args": ["--version"], "workdir": str(ROOT)},
     "pi": {"cli": "pi", "exec_args": ["--print", "--no-session", "--no-context-files"],
            "version_args": ["--version"], "workdir": str(Path.home())},
@@ -278,6 +282,7 @@ AGENT_CLIS: dict = {
 AGENT_ALIASES: dict = {
     "antigravity": "agy", "agy": "agy", "反重力": "agy", "安特格拉维蒂": "agy",
     "codex": "codex", "可头大": "codex", "扣代码": "codex", "扣德斯": "codex",
+    "deepseek": "deepseek", "dsh": "deepseek", "深寻": "deepseek", "深度求索": "deepseek",
     "claude": "claude", "克劳德": "claude",
     "pi": "pi",
     "vscode": "vscode", "code": "vscode",
@@ -300,6 +305,8 @@ VISIBLE_DIR = ROOT / "state" / "visible_runs"
 VISIBLE_SPECS: dict = {
     "codex": {"cmd": ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust"],
               "workdir": str(PROJECT_ROOT), "title": "Codex-Asong"},
+    "deepseek": {"cmd": ["pnpm", "dsh", "--profile", "headless"],
+                 "workdir": str(Path.home() / "deepseek-harness"), "title": "DeepSeek-Asong"},
     "claude": {"cmd": [sys.executable, str(ROOT.parent / "agents" / "claude_visible_run.py")],
                "workdir": str(PROJECT_ROOT), "title": "ClaudeCode-Asong"},
     "agy": {"cmd": ["agy", "--prompt-interactive"],

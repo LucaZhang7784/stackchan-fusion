@@ -1,8 +1,10 @@
 # StackChan 融合方案
 
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
-**codex / claude / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
+**codex / claude / deepseek / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.20（2026-08-15）：接入 DeepSeek Harness（dsh）——语音派发 headless 任务 +
+> Web 会话 transcript 兜底播报（zstd 解码，turn/end 自动 done）+ Windows 通知。
 > v08.19（2026-08-15）：播报时长阈值 15 秒——估算 ≤15s 完整播报，>15s 摘要到约 15s
 > （语速 4.5 字/s 可配 push_tts_cps，覆盖完成/提问/待确认/报错）。
 > v08.18（2026-08-15）：agent 事件（完成/提问/待确认/报错）同步弹 Windows 系统通知

@@ -864,6 +864,52 @@ function Build-Menu {
     })
     $script:menu.Items.Add($itemRestart) | Out-Null
 
+    # 一键重启激活所有服务(网关 + 云桥 MCP + Funnel 代理; 后台执行)
+    $itemRestartAll = New-Object System.Windows.Forms.ToolStripMenuItem
+    $itemRestartAll.Text = '重启激活所有服务'
+    $itemRestartAll.ToolTipText = '依次重启网关、云桥 MCP、Funnel 代理, 并等待网关恢复健康。'
+    $itemRestartAll.Add_Click({
+        $mcpDir = Join-Path (Split-Path -Parent $root) 'xiaozhi-mcp'
+        $srvDir = Join-Path (Split-Path -Parent $root) 'server'
+        $work = {
+            param($gwDir, $mcpDir, $srvDir)
+            function Run-Hidden([string]$file) {
+                try {
+                    $p = Start-Process -FilePath 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+                        -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$file`"") `
+                        -WindowStyle Hidden -Wait -PassThru
+                    return $p.ExitCode
+                } catch { return -1 }
+            }
+            $lines = @()
+            $rc = Run-Hidden (Join-Path $gwDir 'stop_gateway.ps1'); Start-Sleep -Seconds 2
+            $rc2 = Run-Hidden (Join-Path $gwDir 'run_gateway.ps1')
+            $lines += "网关: stop=$rc start=$rc2"
+            $rc3 = Run-Hidden (Join-Path $mcpDir 'stop_bridge.ps1'); Start-Sleep -Seconds 2
+            $rc4 = Run-Hidden (Join-Path $mcpDir 'run_bridge.ps1')
+            $lines += "云桥 MCP: stop=$rc3 start=$rc4"
+            Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like '*funnel_proxy.py*' } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+            $rc5 = Run-Hidden (Join-Path $srvDir 'start_funnel_proxy.ps1')
+            $lines += "Funnel 代理: start=$rc5"
+            $gwOk = $false
+            for ($i = 0; $i -lt 30; $i++) {
+                try {
+                    $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8010/healthz' -UseBasicParsing -TimeoutSec 3
+                    if ($r.status -eq 'ok') { $gwOk = $true; break }
+                } catch { }
+                Start-Sleep -Seconds 1
+            }
+            $lines += "网关健康: $(if($gwOk){'OK'}else{'超时未就绪'})"
+            return ($lines -join "`n")
+        }
+        $done = { param($out) [System.Windows.Forms.MessageBox]::Show($out.Trim(), '重启激活所有服务', 'OK', 'Information') | Out-Null }
+        Start-BusyJob '重启激活所有服务' $work $done -argsList @($root, $mcpDir, $srvDir)
+    })
+    $script:menu.Items.Add($itemRestartAll) | Out-Null
+
     $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
     $itemExit = New-Object System.Windows.Forms.ToolStripMenuItem
@@ -871,6 +917,7 @@ function Build-Menu {
     $itemExit.Add_Click({
         $script:notify.Visible = $false
         $script:timer.Stop()
+        if ($script:busyTimer) { $script:busyTimer.Stop() }
         Stop-Collector
         [System.Windows.Forms.Application]::Exit()
     })
@@ -883,7 +930,7 @@ function Get-CurrentStatus {
     try {
         if (Test-Path -LiteralPath $statusPath) {
             $age = ((Get-Date) - (Get-Item -LiteralPath $statusPath).LastWriteTime).TotalSeconds
-            if ($age -le 20) { return (Get-Content -Raw -LiteralPath $statusPath -Encoding UTF8 | ConvertFrom-Json) }
+            if ($age -le 60) { return (Get-Content -Raw -LiteralPath $statusPath -Encoding UTF8 | ConvertFrom-Json) }
         }
     } catch { }
     return $null
@@ -937,14 +984,20 @@ $script:menu = New-Object System.Windows.Forms.ContextMenuStrip
 $script:notify.ContextMenuStrip = $script:menu
 Write-TrayLog "托盘初始化: menu=$($null -ne $script:menu) notify=$($null -ne $script:notify)"
 
-# UI 线程: 2s 读缓存刷新 + 忙任务轮询(不采集, 不冻结)
+# UI 线程: 状态刷新 20s(读缓存, 变化才重建菜单); 忙任务单独 1s 轮询(不冻结)
 $script:timer = New-Object System.Windows.Forms.Timer
-$script:timer.Interval = 2000
+$script:timer.Interval = 20000
 $script:timer.Add_Tick({
     Update-Status
-    Check-BusyJob
 })
 $script:timer.Start()
+
+$script:busyTimer = New-Object System.Windows.Forms.Timer
+$script:busyTimer.Interval = 1000
+$script:busyTimer.Add_Tick({
+    Check-BusyJob
+})
+$script:busyTimer.Start()
 
 # 后台采集器(独立进程): 每 5s 采集状态写入 state\tray_status.json, UI 只读该 JSON
 $script:lastIconKey = ''

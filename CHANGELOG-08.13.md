@@ -150,3 +150,16 @@
 - 覆盖全部 agent（codex / claude / agy / vscode / system），所有事件都经同一入口。
 - **真机验证（08-15）**：done/question/confirm 三类均弹出 Windows 通知
   （notify_windows.log 留痕），机器人播报同步正常。
+
+## v08.19（2026-08-15）：播报时长阈值改为 15 秒
+
+- **规则变更**（gateway/fusion_gateway.py）：原先按"50 字"阈值摘要，改为按
+  **语音时长**判定——估算时长 ≤15 秒完整播报；>15 秒用本地 LLM 提炼为约 15 秒的
+  口语化摘要（框架"agent 任务完成/出错/需要确认"永远保留，摘要含完整结论，
+  退化输出丢弃改尾部提取）。
+- **时长估算**：新增 `_speech_duration_s`（字符数 / 语速），语速默认 4.5 字/秒，
+  可用 `config.json` 的 `push_tts_cps` 调整（config.json.example 已加）。
+- 覆盖全部播报类型：完成 done / 提问 question / 待确认（question 触发）/ 报错 error
+  （含确认回执 已允许/已拒绝）。
+- **真机验证（08-15）**：短消息（28 字 ≈6s）完整播报；超长消息摘要 67 字 ≈14.9s，
+  关键信息（EMQX/QoS1/G 盘/87MB/粤语女声）全部保留。

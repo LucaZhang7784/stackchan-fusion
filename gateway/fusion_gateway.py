@@ -763,17 +763,20 @@ def _is_degenerate_summary(s: str) -> bool:
     return t in _DEGENERATE_SUMMARIES or t.startswith("任务完成")
 
 
-def _summarize_for_speech(text: str, max_chars: int = 50) -> str:
-    """轨二(吞字根治): 长文本 LLM 口语化摘要, 送入 TTS 引擎前调用。
-    len(text) > max_chars 时用本地 LLM(Ollama)提炼为 ≤max_chars 字的口语化摘要;
-    【摘要必须包含原文的完整结论】(根因/结果/决定), 可省略过程细节;
-    LLM 不可用/超时/输出异常时降级为尾部结论句提取(结论一般在结尾),
-    保证推流永不卡死且不丢结论。
+def _speech_duration_s(text: str) -> float:
+    """估算口语时长(秒): 按字符数/每秒语速。默认中英混排 4.5 字/秒, 可用
+    config.json 的 push_tts_cps 调整。"""
+    cps = float(CFG.get("push_tts_cps", 4.5) or 4.5)
+    return len(str(text or "")) / cps
 
-    v08.14(2026-08-13): 框架(agent 任务完成/出错/需要确认)与正文分离——
-    框架永远保留并拼回, LLM 只对正文做摘要; LLM 输出做退化校验
-    (只回"任务完成/好的"等无内容框架词时丢弃, 改尾部结论提取),
-    杜绝"只播完成、丢内容"与摘要吞前缀。"""
+
+def _summarize_for_speech(text: str, max_duration_s: float = 15.0) -> str:
+    """轨二(吞字根治): 按【语音时长】判定是否摘要, 送入 TTS 引擎前调用。
+
+    规则(2026-08-15): 估算语音时长 > max_duration_s(默认 15 秒)才用本地 LLM 提炼为
+    约 max_duration_s 秒的口语化摘要; ≤15 秒完整播报。
+    框架(agent 任务完成/出错/需要确认)永远保留; 摘要必须含完整结论; LLM 退化输出
+    (只回"任务完成/好的"等)丢弃改尾部结论提取; LLM 不可用/超时降级尾部结论句。"""
     text = str(text or "").strip()
     prefix = ""
     m = re.match(
@@ -784,15 +787,20 @@ def _summarize_for_speech(text: str, max_chars: int = 50) -> str:
         text = m.group(2).strip()
     if not text:
         return prefix.rstrip(":： ")
-    if len(text) <= max_chars:
-        return prefix + text
+    if _speech_duration_s(prefix + text) <= max_duration_s:
+        return prefix + text  # 完整播报(≤15s)
+    # 摘要预算: (总时长 - 前缀时长) 折算为字符数
+    cps = float(CFG.get("push_tts_cps", 4.5) or 4.5)
+    content_budget_s = max(3.0, max_duration_s - _speech_duration_s(prefix))
+    max_chars = max(12, int(content_budget_s * cps))
     host = str(CFG.get("local_llm_host", "http://127.0.0.1:11434"))
     models = [str(CFG.get("local_llm_model", "qwen3.5:9b"))]
     for m in ("qwen3.5:9b", "gemma4:12b"):
         if m not in models:
             models.append(m)
     prompt = (
-        f"这是要播报给用户的 agent 任务完成消息正文，请提炼成不超过 {max_chars} 个字的口语化中文摘要。"
+        f"这是要播报给用户的 agent 消息正文，请提炼成不超过 {max_chars} 个字"
+        f"（约 {content_budget_s:.0f} 秒语音）的口语化中文摘要。"
         f"硬性要求：1) 必须包含原文的具体内容与最终结论（做了什么/结果是什么/决定是什么），"
         "严禁只输出'任务完成''已完成''好的'等无内容框架词；2) 保留关键数字与专有名词；"
         "3) 口语自然，适合朗读。只输出摘要正文，不要引号、不要markdown、不要任何解释。\n\n"
@@ -916,7 +924,7 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
         # 播报规则: ≤50 字完整播报; >50 字 LLM 口语化摘要为 ≤50 字(失败降级截断)。
         # 先只做清洗不截断(limit 拉高), 保证摘要器拿到完整原文。
         text = _tts_text(text, limit=2000)
-        text = _summarize_for_speech(text, max_chars=50)
+        text = _summarize_for_speech(text, max_duration_s=15.0)  # 播报时长 ≤15s 完整, >15s 摘要
         topic = f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/push"
         client = _push_mqtt()
         # 先合成全部 µ-law 帧, 再发 START: 严禁机器人先进 Speaking 空等 TTS

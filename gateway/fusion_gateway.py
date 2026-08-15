@@ -133,6 +133,23 @@ def set_robot_attached(v: bool) -> bool:
 _robot_attached = _load_robot_attached()
 
 
+def _notify_windows(title: str, text: str) -> None:
+    """agent 事件(完成/提问/待确认/报错)同步弹 Windows 系统通知(Toast)。
+    后台进程异步执行, 不阻塞网关; 失败静默(通知为增强, 非关键路径)。"""
+    try:
+        helper = Path(__file__).resolve().parent.parent / "scripts" / "notify_windows.ps1"
+        if not helper.exists():
+            return
+        subprocess.Popen(
+            ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+             "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+             "-File", str(helper), "-Title", str(title)[:80], "-Text", str(text)[:300]],
+            creationflags=_create_no_window(),
+        )
+    except Exception:
+        pass
+
+
 def _ensure_cfg() -> None:
     """模块级 CFG 在 import 时未初始化(仅在 __main__ 加载), 直接调用工具会
     拿到空配置导致 push_tts_voice 回退成普通话晓晓。这里按需补齐, 保证
@@ -366,6 +383,7 @@ def _on_confirm(client, userdata, msg) -> None:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         _enqueue_push(text, "confirm", "pending", entry["id"], "done")
+        _notify_windows(f"{agent} {label}", str((c or {}).get("question", ""))[:200])
     except Exception as e:
         log(f"confirm handler error: {e}")
 
@@ -1399,6 +1417,7 @@ def build_http_app():
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             _enqueue_push(text, "agent", "pending", entry["id"], "question")
+            _notify_windows(f"{agent} 需要确认", summary[:200])
             return JSONResponse({"ok": True, "confirmation_id": c["id"], "pending": pending_count()})
         if etype not in ("done", "progress", "error"):
             return JSONResponse({"error": f"unknown event: {etype}"}, status_code=400)
@@ -1414,6 +1433,7 @@ def build_http_app():
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             _enqueue_push(text, "agent", "pending", entry["id"], "done")
+            _notify_windows(f"{agent} {label}", summary[:200])
         else:
             agents_core.events_append(agent, etype, summary, session_id)
         return JSONResponse({"ok": True, "pending": pending_count()})

@@ -16,7 +16,8 @@ if (-not $line) {
 }
 $env:MCP_ENDPOINT = ($line -replace "^MCP_ENDPOINT=", "").Trim().Trim('"')
 
-$python = (Get-Command python).Source
+$python = "C:\Users\<USER>\AppData\Local\Programs\Python\Python311\python.exe"
+if (-not (Test-Path $python)) { $python = (Get-Command python).Source }
 $pipe = Join-Path $root "mcp_pipe.py"
 $server = Join-Path $root "server.py"
 $log = Join-Path $root "bridge.log"

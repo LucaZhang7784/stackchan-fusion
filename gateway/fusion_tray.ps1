@@ -430,7 +430,10 @@ function Start-BusyJob {
     try {
         $script:busyJob = Start-Job -ScriptBlock $work -ArgumentList $argsList
         $script:busyDone = $done
-        $script:notify.ShowBalloonTip(1800, $title, '正在执行，完成后提示...', [System.Windows.Forms.ToolTipIcon]::Information)
+        $script:notify.BalloonTipTitle = $title
+        $script:notify.BalloonTipText = '正在执行，完成后提示...'
+        $script:notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Information
+        $script:notify.ShowBalloonTip(1800)
         return $true
     } catch {
         Write-TrayLog "Start-BusyJob($title) 失败: $($_.Exception.Message)"
@@ -674,7 +677,10 @@ function Update-Status-Legacy {
 
         if ($script:lastState -ne '' -and $script:lastState -ne $state) {
             $title = if ($state -eq 'ok') { 'StackChan 恢复' } elseif ($state -eq 'bad') { 'StackChan 网关离线' } else { 'StackChan 部分组件异常' }
-            $script:notify.ShowBalloonTip(3000, $title, $script:detail, [System.Windows.Forms.ToolTipIcon]::Warning)
+            $script:notify.BalloonTipTitle = $title
+            $script:notify.BalloonTipText = $script:detail
+            $script:notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Warning
+            $script:notify.ShowBalloonTip(3000)
         }
         $script:lastState = $state
     } catch {
@@ -962,7 +968,10 @@ function Update-Status {
         }
         if ($script:lastState -ne '' -and $script:lastState -ne $s.state) {
             $title = if ($s.state -eq 'ok') { 'StackChan 恢复' } elseif ($s.state -eq 'bad') { 'StackChan 网关离线' } else { 'StackChan 部分组件异常' }
-            $script:notify.ShowBalloonTip(3000, $title, $s.detail, [System.Windows.Forms.ToolTipIcon]::Warning)
+            $script:notify.BalloonTipTitle = $title
+            $script:notify.BalloonTipText = $s.detail
+            $script:notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Warning
+            $script:notify.ShowBalloonTip(3000)
         }
         $script:lastState = $s.state
     } catch {

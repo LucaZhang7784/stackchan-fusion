@@ -183,3 +183,18 @@
   播报+通知）。依赖 `zstandard` 已加入 requirements.txt。
 - **真机验证（08-15）**：合成 Web 会话 turn/end → `posted test-a13 turn=1` →
   `push ack [agent]: deepseek 任务完成: …` + Windows 通知；headless 会话正确跳过。
+
+## v08.21（2026-08-15）：托盘忙任务修复 + 云桥 python 加固
+
+- **托盘 ShowBalloonTip 重载修复（gateway/fusion_tray.ps1）**：4 参数
+  `ShowBalloonTip(timeout,title,text,icon)` 在 PS 5.1 运行时绑定失败
+  （`Cannot find an overload... argument count: 4`），导致所有忙任务
+  （Hook 自检、安装 Claude Hooks、重启激活所有服务）Start-BusyJob 直接失败、
+  点击无反应。改为先设 `BalloonTipTitle/BalloonTipText/BalloonTipIcon` 属性，
+  再调 1 参数 `ShowBalloonTip(timeout)`，三处调用全部修正。
+- **云桥 python 加固（xiaozhi-mcp/run_bridge.ps1）**：`Get-Command python` 可能
+  解析到缺 websockets 的解释器（实测 mcp_pipe 报 ModuleNotFoundError，桥守护拉起
+  反复失败）；改为显式使用 Python311 路径（与 run_gateway.ps1 一致），缺失时回退。
+- **真机验证（08-15）**：桥恢复（进程 54152+48684，robotOk=True）；
+  tray_status state=ok / robotOnline=True / mcpOk=True / attached=True；
+  tray_err.log 无新 ShowBalloonTip 错误。

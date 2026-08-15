@@ -135,3 +135,18 @@
   完成弹窗不受 20s 刷新周期影响；Get-CurrentStatus 新鲜度阈值 20s→60s 防误判。
 - **真机验证（08-15）**：一键重启序列实测——网关 49044→44848 重启成功、云桥与
   Funnel 均拉起、healthz 恢复 ok/attached=True；状态 JSON 刷新间隔实测 20.8s。
+
+## v08.18（2026-08-15）：agent 事件同步弹 Windows 系统通知
+
+- **新增 scripts/notify_windows.ps1**：Windows 通知助手——优先现代 Toast
+  （WinRT + Start Menu 快捷方式自注册 AppUserModel.ID `StackChan.Fusion.Gateway`），
+  失败自动回退系统托盘气泡；带 5s 渲染保活与 `state/notify_windows.log` 落盘。
+- **网关集成（gateway/fusion_gateway.py）**：`/api/agent_event` 与触屏确认回执处
+  调用 `_notify_windows`（后台 Popen 异步，不阻塞网关，失败静默）：
+  - `done` → `X 任务完成: <摘要>`
+  - `error` → `X 出错: <摘要>`
+  - `question` → `X 需要确认: <内容>`
+  - 确认回执 → `X 已允许/已拒绝: <问题>`
+- 覆盖全部 agent（codex / claude / agy / vscode / system），所有事件都经同一入口。
+- **真机验证（08-15）**：done/question/confirm 三类均弹出 Windows 通知
+  （notify_windows.log 留痕），机器人播报同步正常。

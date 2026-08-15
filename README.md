@@ -3,6 +3,8 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.18（2026-08-15）：agent 事件（完成/提问/待确认/报错）同步弹 Windows 系统通知
+> （Toast 自注册 AUMID + 气泡兜底，网关统一入口，全部 agent 覆盖）。
 > v08.17（2026-08-15）：托盘「一键重启激活所有服务」（网关/云桥/Funnel 后台串行重启
 > + healthz 自愈确认）+ stop_gateway 按端口兜底 + 托盘状态刷新 20 秒。
 > v08.16（2026-08-13）：托盘图标状态映射（机器人离线=红 / MCP/Hook 故障=黄）+

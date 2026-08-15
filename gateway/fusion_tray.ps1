@@ -739,7 +739,7 @@ function Build-Menu {
     $mcpMenu = New-Object System.Windows.Forms.ToolStripMenuItem
     $mcpMenu.Text = "MCP Toolkit  $(if($s.mcpOk){'● 正常'}else{'○ 异常'})"
     Add-StatusItem $mcpMenu "Profile:" "stackchan" $(if($s.mcpOk){'ok'}else{'bad'})
-    Add-StatusItem $mcpMenu "客户端:" "codex / claude-code / vscode" ''
+    Add-StatusItem $mcpMenu "客户端:" "codex / claude-code / deepseek / agy / vscode" ''
     $script:menu.Items.Add($mcpMenu) | Out-Null
 
     # 机器人链路

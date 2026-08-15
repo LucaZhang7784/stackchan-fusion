@@ -914,6 +914,24 @@ def _session_watcher_loop() -> None:
         time.sleep(5)
 
 
+def _dsh_watcher_loop() -> None:
+    """DeepSeek Harness(dsh) Web 会话兜底监听: 每 20s 扫描一次,
+    轮次完成(turn/end)自动上报 done -> 机器人播报 + Windows 通知。"""
+    sys.path.append(str(Path(__file__).resolve().parent.parent / "scripts"))
+    try:
+        import dsh_session_watcher
+    except Exception as e:
+        log(f"dsh_session_watcher 导入失败: {e}")
+        return
+    while True:
+        try:
+            for d in dsh_session_watcher.scan_and_broadcast():
+                log(f"dsh_session_watcher: {d}")
+        except Exception as e:
+            log(f"dsh_session_watcher 异常: {e}")
+        time.sleep(20)
+
+
 def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str, float, str]:
     """MQTT 主动推送: EdgeTTS 合成 -> 16k µ-law 60ms 帧 -> stackchan/{mac}/push。
     指标 3: 语音推流 ≤60 字口语化摘要(轨二 LLM 提炼, 失败降级截断); 完整原文由调用方保留在
@@ -1532,6 +1550,7 @@ def main() -> None:
     threading.Thread(target=_prewarm_local_llm, daemon=True).start()  # 预热本地 LLM, 首次长文本摘要不降级截断
     threading.Thread(target=_hook_health_loop, daemon=True).start()  # 5 分钟周期自检(hook 配置漂移自动修复+告警)
     threading.Thread(target=_session_watcher_loop, daemon=True).start()  # Codex transcript 兜底播报
+    threading.Thread(target=_dsh_watcher_loop, daemon=True).start()  # DeepSeek Harness 会话兜底播报
     if int(CFG.get("push_interval_s", 5) or 0) > 0:
         threading.Thread(target=_push_loop, daemon=True).start()
 

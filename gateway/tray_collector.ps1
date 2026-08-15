@@ -197,5 +197,5 @@ while ($true) {
     } catch {
         Write-Log "tray_collector 采集异常: $($_.Exception.Message)"
     }
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 20   # 托盘状态刷新周期 20s(2026-08-15)
 }

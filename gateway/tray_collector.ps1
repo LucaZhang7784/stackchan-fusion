@@ -144,7 +144,7 @@ function Get-BroadcastHistory {
             } catch { }
         }
     }
-    return ,$hist.Count, $last, $lastTs, $recent
+    return $hist.Count, $last, $lastTs, $recent   # v08.27: 去掉前导逗号, histCount 为标量而非单元素数组
 }
 
 function Get-RobotOnline {

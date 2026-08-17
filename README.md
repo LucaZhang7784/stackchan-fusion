@@ -3,6 +3,8 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / deepseek / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.27（2026-08-17）：托盘菜单"全服务离线"假象根治——Build-Menu 渲染真实快照
+> （此前菜单永远读初始占位表，图标/气泡正常但菜单全离线）。
 > v08.26（2026-08-17）：托盘播报历史队列——网关记录每次推送结果
 > （ack/no-ack/fail）到 state/broadcast_history.jsonl，托盘可查最近 50 条已播报历史。
 > v08.25（2026-08-17）：队列卡死根治（TTS 估时中英文分算 + 英文跳过粤语 sherpa）+

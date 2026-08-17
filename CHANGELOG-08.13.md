@@ -253,3 +253,21 @@
   修正为 `::Info`。
 - **真机验证（08-17 16:25）**：英文长消息 push ack；tray_status 全部正常；
   tray_err.log 无新气球错误；pending UTF-8 显示无乱码。
+
+## v08.26（2026-08-17）：托盘播报历史队列
+
+- **需求**：托盘可查看"已播报消息"的历史记录，区分已送达 / 离线未确认 / 推送失败。
+- **网关（gateway/fusion_gateway.py）**：新增 `_broadcast_history_append`，
+  在 `_push_worker` 的 ack / no-ack / fail 三处结果落盘
+  `gateway/state/broadcast_history.jsonl`（`{"ts","status","source","text"}`），
+  保留尾部 500 条（每 100 条裁剪一次，避免频繁整文件重写）；ping 探活静默，
+  不进历史。
+- **采集器（gateway/tray_collector.ps1）**：读取历史尾部，tray_status.json 新增
+  `histCount` / `lastBroadcast` / `lastBroadcastTs` / `broadcastRecent`（最近 5 条），
+  状态详情新增「播报历史」行。
+- **托盘（gateway/fusion_tray.ps1）**：机器人链路新增「最近播报」行；播报队列新增
+  「播报历史: N 条」；队列操作新增「显示播报历史...」弹窗（最近 50 条倒序，
+  UTF-8 读取，状态中文映射 已播报/未确认/失败）。
+- **验证（08-17 19:33）**：测试推送 `codex 任务完成: 播报历史队列功能测试`
+  → push ack → broadcast_history.jsonl 落盘 → tray_status histCount/lastBroadcast
+  /broadcastRecent 正确刷新；托盘 UI 可查看历史。

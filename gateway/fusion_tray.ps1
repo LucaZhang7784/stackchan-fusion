@@ -20,6 +20,7 @@ if (-not $authToken) { $authToken = '' }
 $bridgeErr = Join-Path (Split-Path -Parent $root) 'xiaozhi-mcp\bridge.err'
 $eventsFile = Join-Path $root 'data\agent_events.jsonl'
 $confirmFile = Join-Path $root 'data\agent_confirmations.json'
+$historyFile = Join-Path $root 'state\broadcast_history.jsonl'
 
 $script:lastState = ''              # 上一次总状态
 $script:lastRestartAt = [DateTime]::MinValue
@@ -246,6 +247,43 @@ function Show-QueueMessages {
     $form.ShowDialog() | Out-Null
 }
 
+function Show-BroadcastHistory {
+    # 播报历史队列: state/broadcast_history.jsonl(由网关 _push_worker 记录 ack/no-ack/fail), 最近 50 条倒序展示
+    $lines = @()
+    $hist = @()
+    if (Test-Path -LiteralPath $historyFile) {
+        $hist = @(Get-Content -LiteralPath $historyFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+    }
+    if ($hist.Count) {
+        $from = [Math]::Max(0, $hist.Count - 50)
+        for ($i = $hist.Count - 1; $i -ge $from; $i--) {
+            try {
+                $o = $hist[$i] | ConvertFrom-Json
+                $t = [string]$o.text
+                $t = $t -replace '\s+', ' '
+                if ($t.Length -gt 200) { $t = $t.Substring(0, 200) + '...' }
+                $statusLabel = switch ([string]$o.status) { 'ack' { '已播报' } 'no-ack' { '未确认' } 'fail' { '失败' } default { $o.status } }
+                $lines += "[$($o.ts)] [$statusLabel] $($o.source): $t"
+            } catch { $lines += $hist[$i] }
+        }
+    }
+    if (-not $lines.Count) { $lines = '(暂无播报历史)' }
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'StackChan 播报历史 (最近 50 条)'
+    $form.Size = New-Object System.Drawing.Size(760, 520)
+    $form.StartPosition = 'CenterScreen'
+    $form.TopMost = $true
+    $txt = New-Object System.Windows.Forms.TextBox
+    $txt.Multiline = $true
+    $txt.ReadOnly = $true
+    $txt.ScrollBars = 'Vertical'
+    $txt.Dock = 'Fill'
+    $txt.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9)
+    $txt.Text = ($lines -join "`r`n")
+    $form.Controls.Add($txt)
+    $form.ShowDialog() | Out-Null
+}
+
 function Clear-QueueData {
     # 清空事件队列 + 推送队列(无 BOM 写入, 避免破坏 JSONL); 待确认问题保留。
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -368,6 +406,7 @@ $script:status = @{
     state = 'warn'; label = '采集初始中...'; gwOk = $false; mcpOk = $false; robotOk = $false
     gwPid = 0; tools = 0; pending = 0; events = 0; confirm = 0; total = 0
     lastPush = ''; lastCall = ''; bridgeProc = 0; hbMin = -1; attached = $true; detail = ''
+    histCount = 0; lastBroadcast = ''; lastBroadcastTs = ''; broadcastRecent = @()
 }
 $script:attached = $true
 $script:lastMcpCheck = 0
@@ -754,6 +793,7 @@ function Build-Menu {
     Add-StatusItem $robotMenu "机器人本体:" $(if($s.robotOnline){'在线'}else{'离线(最近无 ACK)'}) $(if($s.robotOnline){'ok'}else{'bad'})
     Add-StatusItem $robotMenu "本机连接:" $(if($attached){'已连接'}else{'已断开'}) $(if($attached){'ok'}else{'warn'})
     Add-StatusItem $robotMenu "最近推送:" $(if($s.lastPush){$s.lastPush}else{'暂无'}) $(if($s.lastPush){'ok'}else{'warn'})
+    Add-StatusItem $robotMenu "最近播报:" $(if($s.lastBroadcast){$s.lastBroadcast}else{'暂无'}) $(if($s.lastBroadcast){'ok'}else{'warn'})
     Add-StatusItem $robotMenu "Hook 自检:" $(if($s.hookFault){'存在异常'}else{'正常'}) $(if($s.hookFault){'bad'}else{'ok'})
     Add-StatusItem $robotMenu "云桥接(备用):" "$($s.bridgeProc) 个进程" $(if($s.bridgeProc -ge 1){'ok'}else{'warn'})
     $hbBadge = if ($s.hbMin -ge 0 -and $s.hbMin -le 3) { 'ok' } elseif ($s.hbMin -ge 0) { 'warn' } else { 'bad' }
@@ -767,6 +807,7 @@ function Build-Menu {
     Add-StatusItem $msgMenu "待推送:" "$($s.pending) 条" $(if($s.pending -gt 0){'warn'}else{'ok'})
     Add-StatusItem $msgMenu "待播报事件:" "$($s.events) 条" $(if($s.events -gt 0){'warn'}else{'ok'})
     Add-StatusItem $msgMenu "待确认问题:" "$($s.confirm) 个" $(if($s.confirm -gt 0){'bad'}else{'ok'})
+    Add-StatusItem $msgMenu "播报历史:" "$($s.histCount) 条" ''
     $script:menu.Items.Add($msgMenu) | Out-Null
 
     $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
@@ -778,6 +819,10 @@ function Build-Menu {
     $itemShowQueue.Text = '显示队列消息内容...'
     $itemShowQueue.Add_Click({ Show-QueueMessages }) | Out-Null
     $queueMenu.DropDownItems.Add($itemShowQueue) | Out-Null
+    $itemShowHistory = New-Object System.Windows.Forms.ToolStripMenuItem
+    $itemShowHistory.Text = '显示播报历史...'
+    $itemShowHistory.Add_Click({ Show-BroadcastHistory }) | Out-Null
+    $queueMenu.DropDownItems.Add($itemShowHistory) | Out-Null
     $itemClearQueue = New-Object System.Windows.Forms.ToolStripMenuItem
     $itemClearQueue.Text = '清空队列'
     $itemClearQueue.Add_Click({
@@ -949,7 +994,8 @@ function Update-Status {
         $s = @{ state = 'bad'; label = '采集器未运行'; gwOk = $false; mcpOk = $false; robotOk = $false
                 gwPid = 0; tools = 0; pending = 0; events = 0; confirm = 0; total = 0
                 lastPush = ''; lastCall = ''; bridgeProc = 0; hbMin = -1; attached = $true
-                robotOnline = $true; hookFault = $false; detail = '状态采集器未运行, 请重启托盘。' }
+                robotOnline = $true; hookFault = $false; detail = '状态采集器未运行, 请重启托盘。'
+                histCount = 0; lastBroadcast = ''; lastBroadcastTs = ''; broadcastRecent = @() }
     }
     $attached = if ($null -ne $script:attachOverride) { $script:attachOverride } else { $s.attached }
     if ($null -ne $script:attachOverride -and $s.attached -eq $script:attachOverride) { $script:attachOverride = $null }

@@ -236,3 +236,20 @@
   字幕与语音严格一致。
 - **云端侧**：确认阿松 Prompt v4.0 已贴回 xiaozhi.me 控制台（回复 ≤60 字，
   云端 TTS 不掐尾）。
+
+## v08.25（2026-08-17）：队列消息卡死根治 + 托盘乱码修复 + 忙任务气球修复
+
+- **队列卡死（gateway/fusion_gateway.py）**：英文为主的长文本被 `len×200ms` 估时
+  高估，EdgeTTS 正常输出被误判"截断"→ 回退粤语 sherpa-onnx → 该模型无法分词
+  英文导致 Conv 节点崩溃 → push fail → 消息卡在 pending 每 30s 重试。
+  修复：① 估时改中英文分别计价（中文≈230ms/字、英文≈90ms/字），截断阈值 55%→40%；
+  ② 英文为主文本不再走 sherpa（跳过必崩路径），最后一次 EdgeTTS 直出（音频有效即用）。
+  实测：403 风格英文长消息全量播报 push ack。
+- **托盘乱码（fusion_tray.ps1 / tray_collector.ps1）**：队列/事件/确认文件读取
+  未指定 `-Encoding UTF8`，PS 5.1 按 GBK 读 UTF-8 显示"浠诲姟瀹屾垚"等乱码；
+  所有 JSON/JSONL 读取统一补 `-Encoding UTF8`（数据本身完好，纯显示修复）。
+- **忙任务气球（fusion_tray.ps1）**：`BalloonTipIcon = ToolTipIcon::Information`
+  枚举名错误（正确为 `Info`）→ "重启激活所有服务"等忙任务自 v08.21 起一直失败；
+  修正为 `::Info`。
+- **真机验证（08-17 16:25）**：英文长消息 push ack；tray_status 全部正常；
+  tray_err.log 无新气球错误；pending UTF-8 显示无乱码。

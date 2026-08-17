@@ -86,7 +86,7 @@ function Get-BridgeInfo {
         $ageMin = ((Get-Date) - (Get-Item -LiteralPath $bridgeErr).LastWriteTime).TotalMinutes
         $heartbeatMin = [math]::Round($ageMin, 1)
         # 最近一次工具调用时间
-        $tail = Get-Content -LiteralPath $bridgeErr -Tail 200 -ErrorAction SilentlyContinue
+        $tail = Get-Content -LiteralPath $bridgeErr -Encoding UTF8 -Tail 200 -ErrorAction SilentlyContinue
         $callLine = $tail | Where-Object { $_ -match 'CallToolRequest' } | Select-Object -Last 1
         if ($callLine) {
             if ($callLine -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})') {
@@ -144,16 +144,16 @@ function Get-QueueInfo {
     $pending = 0
     $pendingFile = Join-Path $root 'state\pending.jsonl'
     if (Test-Path -LiteralPath $pendingFile) {
-        $pending = @(Get-Content -LiteralPath $pendingFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }).Count
+        $pending = @(Get-Content -LiteralPath $pendingFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }).Count
     }
     $events = @()
     if (Test-Path -LiteralPath $eventsFile) {
-        $events = @(Get-Content -LiteralPath $eventsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+        $events = @(Get-Content -LiteralPath $eventsFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
     }
     $confirm = 0
     if (Test-Path -LiteralPath $confirmFile) {
         try {
-            $items = Get-Content -Raw -LiteralPath $confirmFile | ConvertFrom-Json
+            $items = Get-Content -Raw -LiteralPath $confirmFile -Encoding UTF8 | ConvertFrom-Json
             $confirm = @($items | Where-Object { -not $_.answered }).Count
         } catch { }
     }
@@ -179,14 +179,14 @@ function Get-QueueItems {
     # 返回 (事件条目[], 推送条目[])
     $evs = @()
     if (Test-Path -LiteralPath $eventsFile) {
-        $evs = @(Get-Content -LiteralPath $eventsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | ForEach-Object {
+        $evs = @(Get-Content -LiteralPath $eventsFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | ForEach-Object {
             try { $o = $_ | ConvertFrom-Json; "[$($o.ts)] $($o.agent) $($o.type): $($o.summary)" } catch { $_ }
         })
     }
     $pus = @()
     $pendingFile = Join-Path $root 'state\pending.jsonl'
     if (Test-Path -LiteralPath $pendingFile) {
-        $pus = @(Get-Content -LiteralPath $pendingFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | ForEach-Object {
+        $pus = @(Get-Content -LiteralPath $pendingFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | ForEach-Object {
             try { $o = $_ | ConvertFrom-Json; "[$($o.created_at)] $($o.text)" } catch { $_ }
         })
     }
@@ -197,7 +197,7 @@ function Show-QueueMessages {
     $lines = @()
     $evs = @()
     if (Test-Path -LiteralPath $eventsFile) {
-        $evs = @(Get-Content -LiteralPath $eventsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+        $evs = @(Get-Content -LiteralPath $eventsFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
     }
     if ($evs.Count) {
         $lines += '===== 待播报事件 (agent_events) ====='
@@ -214,7 +214,7 @@ function Show-QueueMessages {
     $pendingFile = Join-Path $root 'state\pending.jsonl'
     $pus = @()
     if (Test-Path -LiteralPath $pendingFile) {
-        $pus = @(Get-Content -LiteralPath $pendingFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+        $pus = @(Get-Content -LiteralPath $pendingFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
     }
     if ($pus.Count) {
         if ($lines.Count) { $lines += '' }
@@ -253,12 +253,12 @@ function Clear-QueueData {
     $all = @()
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     if (Test-Path -LiteralPath $eventsFile) {
-        $all += Get-Content -LiteralPath $eventsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }
+        $all += Get-Content -LiteralPath $eventsFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }
         [System.IO.File]::WriteAllText($eventsFile, '', $utf8)
     }
     $pendingFile = Join-Path $root 'state\pending.jsonl'
     if (Test-Path -LiteralPath $pendingFile) {
-        $all += Get-Content -LiteralPath $pendingFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }
+        $all += Get-Content -LiteralPath $pendingFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }
         [System.IO.File]::WriteAllText($pendingFile, '', $utf8)
     }
     if ($all.Count) { [System.IO.File]::WriteAllLines($backup, $all, $utf8) }
@@ -432,7 +432,7 @@ function Start-BusyJob {
         $script:busyDone = $done
         $script:notify.BalloonTipTitle = $title
         $script:notify.BalloonTipText = '正在执行，完成后提示...'
-        $script:notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Information
+        $script:notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
         $script:notify.ShowBalloonTip(1800)
         return $true
     } catch {
@@ -557,7 +557,7 @@ function Build-Menu-Legacy {
             '确定把所有未回答的 agent 待确认问题标记为已清理？', '清空待确认', 'YesNo', 'Warning')
         if ($r -eq 'Yes') {
             if (Test-Path -LiteralPath $confirmFile) {
-                $items = Get-Content -Raw -LiteralPath $confirmFile | ConvertFrom-Json
+                $items = Get-Content -Raw -LiteralPath $confirmFile -Encoding UTF8 | ConvertFrom-Json
                 foreach ($c in $items) { if (-not $c.answered) { $c.answered = $true; $c.answer = 'cleared-from-tray' } }
                 $items | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $confirmFile -Encoding UTF8
             }
@@ -791,7 +791,7 @@ function Build-Menu {
         $r = [System.Windows.Forms.MessageBox]::Show('确定把所有未回答的 agent 待确认问题标记为已清理？', '清空待确认', 'YesNo', 'Warning')
         if ($r -eq 'Yes') {
             if (Test-Path -LiteralPath $confirmFile) {
-                $items = Get-Content -Raw -LiteralPath $confirmFile | ConvertFrom-Json
+                $items = Get-Content -Raw -LiteralPath $confirmFile -Encoding UTF8 | ConvertFrom-Json
                 foreach ($c in $items) { if (-not $c.answered) { $c.answered = $true; $c.answer = 'cleared-from-tray' } }
                 $items | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $confirmFile -Encoding UTF8
             }

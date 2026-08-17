@@ -3,6 +3,8 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / deepseek / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.25（2026-08-17）：队列卡死根治（TTS 估时中英文分算 + 英文跳过粤语 sherpa）+
+> 托盘乱码修复（JSON 读取补 UTF8）+ 忙任务气球枚举修复。
 > v08.24（2026-08-17）：播报严格按屏幕字幕全文播报——push_full_broadcast 默认 true
 > （不做 15 秒摘要，字幕=语音=全文）；false 可回到 15 秒摘要规则。
 > v08.23（2026-08-17）：阿松 System Prompt v4.0——称呼铁律（自称阿松/称呼你/

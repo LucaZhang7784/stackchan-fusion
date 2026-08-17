@@ -999,6 +999,7 @@ function Update-Status {
     }
     $attached = if ($null -ne $script:attachOverride) { $script:attachOverride } else { $s.attached }
     if ($null -ne $script:attachOverride -and $s.attached -eq $script:attachOverride) { $script:attachOverride = $null }
+    $script:status = $s   # v08.27: Build-Menu 渲染真实快照(此前菜单永远读初始占位表, 显示全离线)
     $sig = "$($s.state)|$($s.gwPid)|$($s.pending)|$($s.events)|$($s.confirm)|$attached|$($s.lastPush)|$($s.hbMin)|$($s.robotOnline)|$($s.hookFault)|$($null -ne $script:busyJob)"
     try {
         $iconKey = "$($s.state)|$($s.gwOk)|$($s.mcpOk)|$($s.robotOk)"

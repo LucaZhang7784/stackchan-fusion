@@ -271,3 +271,19 @@
 - **验证（08-17 19:33）**：测试推送 `codex 任务完成: 播报历史队列功能测试`
   → push ack → broadcast_history.jsonl 落盘 → tray_status histCount/lastBroadcast
   /broadcastRecent 正确刷新；托盘 UI 可查看历史。
+
+## v08.27（2026-08-17）：托盘菜单"全服务离线"假象根治
+
+- **现象**：采集器 tray_status.json 一切正常（state=ok / 网关在线 / 机器人在线），
+  图标与气泡也正常，但托盘菜单恒显"Gateway 离线 / MCP 异常 / 机器人离线"。
+- **根因（fusion_tray.ps1）**：`Build-Menu` 开头读取 `$script:status` 缓存，
+  但实时刷新路径 `Update-Status` 只把新鲜快照用于图标/气泡，从未写回
+  `$script:status`（唯一写它的 `Update-StatusCache` 是死代码，无人调用）——
+  菜单永远渲染启动时的初始占位表（全 false）。这也解释了此前
+  "图标绿色但详情全离线" 的旧报告。
+- **修复**：`Update-Status` 取到最新 `$s` 后补一行 `$script:status = $s`，
+  菜单即渲染真实快照。
+- **顺手修正（tray_collector.ps1）**：`Get-BroadcastHistory` 返回首元素
+  `,$hist.Count` 的前导逗号把 histCount 包成单元素数组，去掉后为标量。
+- **验证（08-17 19:44）**：托盘重启后 state=ok / gwOk=true / mcpOk=true /
+  robotOnline=true；histCount=12（Int64 标量）；最近播报正常显示。

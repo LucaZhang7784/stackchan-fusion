@@ -198,3 +198,16 @@
 - **真机验证（08-15）**：桥恢复（进程 54152+48684，robotOk=True）；
   tray_status state=ok / robotOnline=True / mcpOk=True / attached=True；
   tray_err.log 无新 ShowBalloonTip 错误。
+
+## v08.22（2026-08-17）：屏幕提示"主人/小智"→"你/阿松"
+
+- **背景**：机器人屏幕仍显示"小智/主人"（如"主人勾着小智的脖子"）——云端 LLM
+  偶发用"小智"自称、称用户"主人"。
+- **固件屏幕归一化（m5stack_core_s3.cc SetChatMessage）**：屏幕显示路径统一过滤
+  `小智→阿松`、`主人→你`——云端回复、触摸旁白、系统提示全部上屏前替换，
+  屏幕永远显示"阿松/你"（音频仍由云端输出，如需同步改请在 xiaozhi.me 控制台
+  更新阿松 System Prompt）。
+- **触摸动作旁白**：7 条"（主人摸了摸小智的头）…"改为"（你摸了摸阿松的头）…"。
+- **提示词副本**：stackchan_prompt.txt 中"主人"→"你"、"史塔克酱"→"阿松"。
+- **交付**：重建固件 + app-only 刷 0x410000（保留配置）；机器人在线验证
+  （robot ping ack=True，tray_status 全部正常）。

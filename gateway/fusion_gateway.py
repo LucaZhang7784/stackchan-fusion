@@ -538,6 +538,40 @@ def _finish_push_record(kind: str, record_id: str, ok: bool) -> None:
             pending_remove_ids({record_id})  # 规范 3: ACK 确认送达 -> 物理删除(ACK-and-Delete)
 
 
+# ---- 播报历史队列(2026-08-17): 记录每次推送结果, 供托盘查看已播报消息 ----
+_BROADCAST_HISTORY_FILE = ROOT / "state" / "broadcast_history.jsonl"
+_BROADCAST_HISTORY_MAX = 500
+_broadcast_history_lock = threading.Lock()
+_broadcast_history_append_count = 0
+
+
+def _broadcast_history_append(status: str, source: str, text: str) -> None:
+    """追加一条播报历史(status: ack=已送达 / no-ack=离线未确认 / fail=推送失败), 保留尾部 500 条。"""
+    global _broadcast_history_append_count
+    if not (text or "").strip():
+        return
+    try:
+        entry = {
+            "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": status,
+            "source": source or "",
+            "text": text,
+        }
+        with _broadcast_history_lock:
+            _BROADCAST_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(_BROADCAST_HISTORY_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            _broadcast_history_append_count += 1
+            # 每 100 条裁剪一次, 避免频繁整文件重写
+            if _broadcast_history_append_count % 100 == 0:
+                lines = _BROADCAST_HISTORY_FILE.read_text(encoding="utf-8").splitlines()
+                if len(lines) > _BROADCAST_HISTORY_MAX:
+                    _BROADCAST_HISTORY_FILE.write_text(
+                        "\n".join(lines[-_BROADCAST_HISTORY_MAX:]) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _push_worker() -> None:
     """单 Worker: 逐条出队推流, 前一条播报完毕(音频时长 + 0.5s)才推下一条。
     完整原文经 log 落盘; 失败保留队列供机器人唤醒补播。"""
@@ -570,13 +604,16 @@ def _push_worker() -> None:
             if ok:
                 if _wait_ack(msg_uid or sent_text):
                     log(f"push ack [{item.get('source')}]: {sent_text[:150]}")  # 记录实际播报文本(摘要后)
+                    _broadcast_history_append("ack", str(item.get("source") or ""), sent_text)
                     _finish_push_record(kind, record_id, True)  # 已送达 -> 标记 pushed
                 else:
                     log(f"push no-ack(机器人离线? 保留兜底): {sent_text[:150]}")
+                    _broadcast_history_append("no-ack", str(item.get("source") or ""), sent_text)
                     _finish_push_record(kind, record_id, False)
                     pending_mark_attempted(record_id)  # 退避期内不重试
             else:
                 log(f"push fail: {err} :: {sent_text[:150] or text[:150]}")
+                _broadcast_history_append("fail", str(item.get("source") or ""), sent_text or text)
                 _finish_push_record(kind, record_id, False)
                 pending_mark_attempted(record_id)
             # 前一条播完(音频时长+0.5s)再取下一条

@@ -67,7 +67,7 @@ function Get-BridgeInfo {
     if (Test-Path -LiteralPath $bridgeErr) {
         $ageMin = ((Get-Date) - (Get-Item -LiteralPath $bridgeErr).LastWriteTime).TotalMinutes
         $heartbeatMin = [math]::Round($ageMin, 1)
-        $tail = Get-Content -LiteralPath $bridgeErr -Tail 200 -ErrorAction SilentlyContinue
+        $tail = Get-Content -LiteralPath $bridgeErr -Encoding UTF8 -Tail 200 -ErrorAction SilentlyContinue
         $callLine = $tail | Where-Object { $_ -match 'CallToolRequest' } | Select-Object -Last 1
         if ($callLine -and $callLine -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})') {
             try {
@@ -84,16 +84,16 @@ function Get-QueueInfo {
     $pending = 0
     $pendingFile = Join-Path $root 'state\pending.jsonl'
     if (Test-Path -LiteralPath $pendingFile) {
-        $pending = @(Get-Content -LiteralPath $pendingFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }).Count
+        $pending = @(Get-Content -LiteralPath $pendingFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }).Count
     }
     $events = @()
     if (Test-Path -LiteralPath $eventsFile) {
-        $events = @(Get-Content -LiteralPath $eventsFile -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+        $events = @(Get-Content -LiteralPath $eventsFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
     }
     $confirm = 0
     if (Test-Path -LiteralPath $confirmFile) {
         try {
-            $items = Get-Content -Raw -LiteralPath $confirmFile | ConvertFrom-Json
+            $items = Get-Content -Raw -LiteralPath $confirmFile -Encoding UTF8 | ConvertFrom-Json
             $confirm = @($items | Where-Object { -not $_.answered }).Count
         } catch { }
     }

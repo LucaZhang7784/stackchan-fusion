@@ -21,6 +21,7 @@
 "push_tts_voice": "zh-HK-HiuMaanNeural",
 "push_tts_rate": "+20%",
 "push_tts_cps": 4.5,
+"push_full_broadcast": true,
   "tts_cache_size": 200,
   "tts_fallback_model_dir": "tts_models/vits-cantonese-hf-xiaomaiiwn",
   "local_llm_host": "http://127.0.0.1:11434",

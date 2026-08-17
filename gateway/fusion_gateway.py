@@ -942,7 +942,12 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
         # 播报规则: ≤50 字完整播报; >50 字 LLM 口语化摘要为 ≤50 字(失败降级截断)。
         # 先只做清洗不截断(limit 拉高), 保证摘要器拿到完整原文。
         text = _tts_text(text, limit=2000)
-        text = _summarize_for_speech(text, max_duration_s=15.0)  # 播报时长 ≤15s 完整, >15s 摘要
+        if bool(CFG.get("push_full_broadcast", True)):
+            # 2026-08-17: 播报严格按屏幕字幕内容(全文)播报, 不压短;
+            # 需要 15 秒摘要规则时设 config.json push_full_broadcast=false。
+            pass
+        else:
+            text = _summarize_for_speech(text, max_duration_s=15.0)
         topic = f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/push"
         client = _push_mqtt()
         # 先合成全部 µ-law 帧, 再发 START: 严禁机器人先进 Speaking 空等 TTS

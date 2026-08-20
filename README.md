@@ -3,6 +3,8 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / deepseek / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.30（2026-08-20）：心跳告警"旧会话残留"防误杀——修复前的旧会话活动
+> 不再误报钩子未触发。
 > v08.29（2026-08-20）：Antigravity hooks.json promlight 嵌套结构拒载自愈——
 > 自检脚本新增 legacy 命名空间扁平化，整文件拒载可自动修复。
 > v08.28（2026-08-17）：屏幕归一化 UTF-8 字节替换 bug 根治——"小智→阿松 /

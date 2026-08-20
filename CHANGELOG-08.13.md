@@ -316,3 +316,13 @@
 - **人工修复**：运行 hook_health 已自动备份
   `hooks.json.bak-auto-repair-20260820-114121` 并扁平化 promlight 段；
   需重启 Antigravity 桌面使新配置加载生效。
+
+## v08.30（2026-08-20）：心跳告警"旧会话残留"防误杀
+
+- **现象**：v08.29 修复并重启 Antigravity 后，自检仍报
+  `钩子未触发(antigravity_hook.log 已 69h 无写入, 但 X 分钟前有真实会话活动)`——
+  该活动是配置修复**之前**的旧会话（当时钩子确实失效），属于残留误报。
+- **修复（scripts/hook_health.py antigravity_heartbeat）**：当最近一次
+  transcript 活动早于 hooks.json 最近一次修复/写入时间时，判定为"旧会话残留"
+  直接跳过告警；修复后若仍有新会话却不写入钩子日志，依然正常告警。
+- **验证（08-20 11:47）**：自检 `全部正常`，托盘 state=ok / hookFault=False。

@@ -220,6 +220,13 @@ def antigravity_heartbeat() -> str:
     active, newest_age = _recent_brain_activity(ACTIVITY_WINDOW_MIN * 60)
     if not active:
         return ""  # 无真实会话 -> 挂机, 不告警
+    # v08.30: 旧会话残留防误杀 —— 最近一次 transcript 活动早于 hooks.json 最近一次
+    # 修复/写入时, 说明是配置修复前的旧会话(当时钩子确实没写入), 不构成当前告警
+    try:
+        if newest_age > now - ANTIGRAVITY_HOOKS.stat().st_mtime:
+            return ""
+    except Exception:
+        pass
     if newest_age < 180:
         return ""  # 会话仍在写入(未结束), 暂不告警
     return (f"钩子未触发({ANTIGRAVITY_HOOK_LOG.name} 已 {hook_age/3600:.1f}h 无写入, "

@@ -298,3 +298,21 @@
 - **修复**：删除长度改为 6 字节（整词替换）：`replace(pos, 6, "阿松")` /
   `replace(pos, 6, "你")`。
 - **交付**：重建固件 + app-only 刷 0x410000（保留配置）。
+
+## v08.29（2026-08-20）：Antigravity hooks.json promlight 嵌套结构拒载自愈
+
+- **现象**：托盘提示"组件异常"。自检报 `Antigravity: language_server 拒载
+  hooks.json(Failed to parse)`。
+- **根因（~/.gemini/config/hooks.json）**：`promlight` 段仍为旧版嵌套结构
+  `{"hooks":[...]}`，Antigravity Go 加载器（hooks.go:44）要求条目顶层直接带
+  `command/type/timeout`，嵌套条目触发整文件拒载
+  （`invalid hook "promlight": command hook must specify 'command'`）——
+  stackchan 段本身是好的，但整文件被拒导致所有 Antigravity 钩子失效。
+  此前 hook_health 自动修复只重建 stackchan 段、保留其它节点，无法消除此异常。
+- **修复（scripts/hook_health.py）**：新增 `_normalize_legacy_namespaces()`，
+  自检时先把非 stackchan 命名空间（如 promlight）的旧嵌套条目扁平化为平命令
+  对象（保留命令与其它自定义节点，强备份后写入），再校验 stackchan 段——
+  同类损坏今后可自愈。
+- **人工修复**：运行 hook_health 已自动备份
+  `hooks.json.bak-auto-repair-20260820-114121` 并扁平化 promlight 段；
+  需重启 Antigravity 桌面使新配置加载生效。

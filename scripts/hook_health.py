@@ -76,6 +76,29 @@ def antigravity_template() -> dict:
     return tpl
 
 
+def _normalize_legacy_namespaces(d: dict) -> bool:
+    """把非 stackchan 命名空间里旧的嵌套 {"hooks":[...]} 条目扁平化
+    (Antigravity Go 加载器要求条目顶层直接带 command/type/timeout, 嵌套会被整文件拒载:
+    "invalid hook ... command hook must specify 'command'")。保留其它用户自定义节点。
+    返回是否发生了修改。"""
+    changed = False
+    for ns, section in d.items():
+        if ns == "stackchan" or not isinstance(section, dict):
+            continue
+        for ev, items in list(section.items()):
+            if not isinstance(items, list):
+                continue
+            flat: list = []
+            for it in items:
+                if isinstance(it, dict) and isinstance(it.get("hooks"), list):
+                    flat.extend(h for h in it["hooks"] if isinstance(h, dict))
+                    changed = True
+                else:
+                    flat.append(it)
+            section[ev] = flat
+    return changed
+
+
 CODEX_EVENTS = ["SessionStart", "UserPromptSubmit", "PermissionRequest", "Stop", "SessionEnd"]
 CLAUDE_EVENTS = ["Stop", "SessionEnd", "Notification", "PermissionRequest"]
 
@@ -211,6 +234,17 @@ def check_antigravity() -> str:
         d = json.loads(ANTIGRAVITY_HOOKS.read_text(encoding="utf-8-sig"))
     except Exception as e:
         return f"Antigravity hooks.json 解析失败: {e}"
+    # v08.29: 先扁平化其它命名空间(如 promlight)的旧嵌套结构 —— 嵌套会导致
+    # Go 加载器整文件拒载, 只重建 stackchan 段无法消除异常
+    if _normalize_legacy_namespaces(d):
+        _backup(ANTIGRAVITY_HOOKS)
+        try:
+            ANTIGRAVITY_HOOKS.write_text(
+                json.dumps(d, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            log("Antigravity hooks.json 已扁平化修复(旧嵌套结构 -> 平命令对象)")
+            return "repaired"
+        except Exception as e:
+            return f"Antigravity 修复失败: {e}"
     sc = d.get("stackchan")
     if not isinstance(sc, dict) or not sc.get("enabled"):
         return "Antigravity stackchan 段缺失或未启用"

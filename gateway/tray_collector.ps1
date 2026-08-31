@@ -46,9 +46,11 @@ function Test-Gateway {
         $r = Invoke-RestMethod -Uri "$gatewayUrl/healthz" -Headers @{ Authorization = "Bearer $authToken" } -TimeoutSec 3
         return @{ ok = ($r.status -eq 'ok'); pid = $r.pid; tools = @($r.tools).Count;
                   attached = if ($null -ne $r.attached) { [bool]$r.attached } else { $true };
+                  startedAt = [string]$r.started_at; robotPresence = [string]$r.robot_presence;
+                  robotPresenceUpdatedAt = $r.robot_presence_updated_at;
                   detail = "PID=$($r.pid) 启动=$($r.started_at) 工具=$(@($r.tools).Count) 个" }
     } catch {
-        return @{ ok = $false; pid = 0; tools = 0; attached = $true; detail = "连接失败: $($_.Exception.Message)" }
+        return @{ ok = $false; pid = 0; tools = 0; attached = $true; startedAt = ''; robotPresence = 'unknown'; robotPresenceUpdatedAt = 0; detail = "连接失败: $($_.Exception.Message)" }
     }
 }
 
@@ -147,16 +149,25 @@ function Get-BroadcastHistory {
     return $hist.Count, $last, $lastTs, $recent   # v08.27: 去掉前导逗号, histCount 为标量而非单元素数组
 }
 
-function Get-RobotOnline {
-    # 机器人本体在线判定: 最近一次 探活/播报 结果(ack=在线, no-ack=离线); 无记录默认在线
+function Get-RobotPresence {
+    param($gw)
+    # 新固件有 retained MQTT status; 旧固件回退到最近 ACK, 兼容未刷机期间。
+    if ($gw.robotPresence -eq 'online') { return @{ online = $true; state = 'online'; detail = '在线(MQTT 状态)' } }
+    if ($gw.robotPresence -eq 'offline') { return @{ online = $false; state = 'offline'; detail = '离线(MQTT 状态)' } }
+    try {
+        if ($gw.startedAt -and ((Get-Date) - [datetime]::Parse($gw.startedAt)).TotalSeconds -lt 60) {
+            return @{ online = $false; state = 'reconnecting'; detail = '启动/重连中(MQTT 状态待到达)' }
+        }
+    } catch { }
     $logFile = Join-Path $root 'gateway.log'
     if (Test-Path -LiteralPath $logFile) {
         $lines = Get-FileTail $logFile 262144 | Where-Object { $_ -match 'robot ping (ack|no-ack)|push (ack|no-ack)' }
         if ($lines.Count -gt 0) {
-            return ($lines[-1] -notmatch 'no-ack')
+            if ($lines[-1] -notmatch 'no-ack') { return @{ online = $true; state = 'online'; detail = '在线(最近 ACK，等待 MQTT 状态)' } }
+            return @{ online = $false; state = 'offline'; detail = '离线(最近探活/播报无 ACK)' }
         }
     }
-    return $true
+    return @{ online = $false; state = 'reconnecting'; detail = '重连中(尚无 MQTT 状态或 ACK)' }
 }
 
 function Get-HookFault {
@@ -207,23 +218,24 @@ while ($true) {
         $queue = Get-QueueInfo
         $lastPush = Get-CloudRobot
         $hist = Get-BroadcastHistory
-        $robotOnline = Get-RobotOnline
+        $presence = Get-RobotPresence $gw
         $hookFault = Get-HookFault
 
         if (-not $gw.ok)                          { $state = 'bad';  $label = '网关离线' }
-        elseif (-not $robotOnline)                { $state = 'bad';  $label = '机器人离线' }
+        elseif ($presence.state -eq 'reconnecting') { $state = 'warn'; $label = '机器人重连中' }
+        elseif (-not $presence.online)            { $state = 'bad';  $label = '机器人离线' }
         elseif (-not $mcp -or $hookFault)         { $state = 'warn'; $label = '组件异常' }
         else                                      { $state = 'ok';   $label = '全部正常' }
         if (-not $gw.attached) { $label = '已断开(不推流)' }
 
-        $detail = "【Gateway】$($gw.detail)`n【MCP】$(if($mcp){'profile stackchan 正常'}else{'profile stackchan 异常'})`n【Hook 自检】$(if($hookFault){'存在异常'}else{'正常'})`n【Robot 本体】$(if($robotOnline){'在线'}else{'离线(最近探活/播报无 ACK)'})`n【Robot 桥】bridge=$($bridge.proc) 进程, 心跳=$($bridge.hb) 分钟, 最近推送: $lastPush`n【播报队列】待推送 $($queue.pending) 条, 待播报事件 $($queue.events) 条, 待确认 $($queue.confirm) 个, 合计 $($queue.total) 条`n【播报历史】$($hist[1])`n【连接】$(if($gw.attached){'已连接机器人'}else{'已断开: 消息入队不推流, 连接后自动补推'})"
+        $detail = "【Gateway】$($gw.detail)`n【MCP】$(if($mcp){'profile stackchan 正常'}else{'profile stackchan 异常'})`n【Hook 自检】$(if($hookFault){'存在异常'}else{'正常'})`n【Robot 本体】$($presence.detail)`n【Robot 桥】bridge=$($bridge.proc) 进程, 心跳=$($bridge.hb) 分钟, 最近推送: $lastPush`n【播报队列】待推送 $($queue.pending) 条, 待播报事件 $($queue.events) 条, 待确认 $($queue.confirm) 个, 合计 $($queue.total) 条`n【播报历史】$($hist[1])`n【连接】$(if($gw.attached){'已连接机器人'}else{'已断开: 消息入队不推流, 连接后自动补推'})"
 
         $status = @{
             ts = (Get-Date -Format 'HH:mm:ss'); state = $state; label = $label
             gwOk = $gw.ok; mcpOk = $mcp; robotOk = $bridge.online; gwPid = $gw.pid; tools = $gw.tools
             pending = $queue.pending; events = $queue.events; confirm = $queue.confirm; total = $queue.total
             lastPush = $lastPush; lastCall = $bridge.lastCall; bridgeProc = $bridge.proc; hbMin = $bridge.hb
-            attached = $gw.attached; detail = $detail; robotOnline = $robotOnline; hookFault = $hookFault
+            attached = $gw.attached; detail = $detail; robotOnline = $presence.online; robotPresence = $presence.state; hookFault = $hookFault
             histCount = $hist[0]; lastBroadcast = $hist[1]; lastBroadcastTs = $hist[2]; broadcastRecent = $hist[3]
         }
         [System.IO.File]::WriteAllText($statusFile, ($status | ConvertTo-Json -Compress), $utf8)

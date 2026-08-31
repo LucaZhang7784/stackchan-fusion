@@ -661,7 +661,7 @@ function Build-Menu-Legacy {
     $itemRestart.Text = '重启网关'
     $itemRestart.Add_Click({
         Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'stop_gateway.ps1')`"") `
+            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'restart_gateway.ps1')`"") `
             -WindowStyle Hidden | Out-Null
         Start-Sleep -Seconds 1
         Start-Process -FilePath 'powershell.exe' `
@@ -906,9 +906,9 @@ function Build-Menu {
     $itemRestart.Text = '重启网关'
     $itemRestart.Add_Click({
         Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'stop_gateway.ps1')`"") `
+            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'restart_gateway.ps1')`"") `
             -WindowStyle Hidden | Out-Null
-        Start-Sleep -Seconds 1
+        # restart_gateway.ps1 handles stop-wait-start atomically.
         Start-Process -FilePath 'powershell.exe' `
             -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'run_gateway.ps1')`"") `
             -WindowStyle Hidden | Out-Null
@@ -933,7 +933,7 @@ function Build-Menu {
                 } catch { return -1 }
             }
             $lines = @()
-            $rc = Run-Hidden (Join-Path $gwDir 'stop_gateway.ps1'); Start-Sleep -Seconds 2
+            $rc = Run-Hidden (Join-Path $gwDir 'restart_gateway.ps1'); Start-Sleep -Seconds 2
             $rc2 = Run-Hidden (Join-Path $gwDir 'run_gateway.ps1')
             $lines += "网关: stop=$rc start=$rc2"
             $rc3 = Run-Hidden (Join-Path $mcpDir 'stop_bridge.ps1'); Start-Sleep -Seconds 2

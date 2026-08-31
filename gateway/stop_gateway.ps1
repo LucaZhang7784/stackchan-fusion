@@ -14,3 +14,7 @@ Get-NetTCPConnection -LocalPort 8010 -State Listen -ErrorAction SilentlyContinue
   Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
   Write-Host "已停止占用 8010 的进程 $($_.OwningProcess)"
 }
+for ($i = 0; $i -lt 50; $i++) {
+  if (-not (Get-NetTCPConnection -LocalPort 8010 -State Listen -ErrorAction SilentlyContinue)) { break }
+  Start-Sleep -Milliseconds 100
+}

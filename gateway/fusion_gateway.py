@@ -74,7 +74,8 @@ DEFAULT_CONFIG = {
     "push_mqtt_host": "broker-cn.emqx.io",
     "push_mqtt_port": 1883,
     "push_topic_prefix": "stackchan",
-    "push_tts_voice": "zh-HK-HiuMaanNeural",  # 女声粤语曉曼(中英混杂); 备选 ja-JP-NanamiNeural(日语) / zh-TW-HsiaoChenNeural(台普)
+    "push_tts_voice": "ja-JP-Nanami:DragonHDLatestNeural",  # 目标日语 HD 女声
+    "push_tts_voice_fallback": "ja-JP-NanamiNeural",  # edge-tts 不支持 DragonHD 时的安全回落
     "push_tts_rate": "+0%",  # 播报语速 1.0x(基准), 不再 +20% 提速
     # Phase 9-D: 本地粤语 TTS 兜底 + 离线 LLM
     "tts_cache_size": 200,  # TTS 帧缓存 LRU 容量(按文本 SHA256)
@@ -303,6 +304,8 @@ _ACK_TIMEOUT_S = 2.0
 _RETRY_BACKOFF_S = 30
 _acked_texts: dict = {}
 _acked_lock = threading.Lock()
+_robot_presence = {"state": "unknown", "updated_at": 0.0}
+_robot_presence_lock = threading.Lock()
 _recent_msg_uids: dict = {}  # 幂等记忆: msg_uid -> ts(5 分钟内重复上报静默丢弃)
 _photo_lock = threading.Lock()
 _photo_state: dict = {}  # robot_snap 单次快照重组状态
@@ -310,6 +313,15 @@ _photo_state: dict = {}  # robot_snap 单次快照重组状态
 
 def _ack_topic() -> str:
     return f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/ack"
+
+
+def _status_topic() -> str:
+    return f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/status"
+
+
+def _robot_presence_snapshot() -> dict:
+    with _robot_presence_lock:
+        return dict(_robot_presence)
 
 
 def _photo_topic() -> str:
@@ -328,6 +340,23 @@ def _on_ack(client, userdata, msg) -> None:
             _acked_texts[text] = time.time()
     except Exception:
         pass
+
+
+def _on_status(client, userdata, msg) -> None:
+    """Retained firmware presence: online on subscribe-ready, offline via MQTT LWT."""
+    try:
+        state = msg.payload.decode("utf-8", "replace").strip().lower()
+        if state not in ("online", "offline"):
+            log(f"robot status ignore: {state[:40]!r}")
+            return
+        with _robot_presence_lock:
+            _robot_presence["state"] = state
+            _robot_presence["updated_at"] = time.time()
+        log(f"robot status {state}")
+        if state == "online":
+            _drain_pending()  # reconnected robot: resume preserved messages immediately
+    except Exception as e:
+        log(f"robot status handler error: {e}")
 
 
 def _on_photo(client, userdata, msg) -> None:
@@ -393,6 +422,8 @@ def _on_push_message(client, userdata, msg) -> None:
         topic = msg.topic or ""
         if topic.endswith("/ack"):
             _on_ack(client, userdata, msg)
+        elif topic.endswith("/status"):
+            _on_status(client, userdata, msg)
         elif topic.endswith("/photo"):
             _on_photo(client, userdata, msg)
         elif topic.endswith("/confirm"):
@@ -405,6 +436,7 @@ def _on_push_connect(client, userdata, flags, rc, properties=None) -> None:
     # paho 重连(clean session)后订阅会丢, 每次连接成功都重订 ACK 主题
     try:
         client.subscribe(_ack_topic(), 0)
+        client.subscribe(_status_topic(), 1)
         client.subscribe(_photo_topic(), 1)  # QoS1: 照片分块不许丢
         client.subscribe(_confirm_topic(), 1)  # Phase 9-B: 触屏审批回执 QoS1 不丢
     except Exception:
@@ -463,6 +495,7 @@ def _push_mqtt() -> paho.Client:
         _push_client.connect(str(CFG.get("push_mqtt_host", "127.0.0.1")), int(CFG.get("push_mqtt_port", 1883)), 10)
         _push_client.loop_start()
         _push_client.subscribe(_ack_topic(), 0)
+        _push_client.subscribe(_status_topic(), 1)
         _push_client.subscribe(_photo_topic(), 1)
         _push_client.subscribe(_confirm_topic(), 1)
     return _push_client
@@ -635,7 +668,14 @@ _PUSH_BATCH_INTERVAL_S = 0.05  # 轻度节流防突发, 不影响实时性(480ms
 
 async def _edge_tts_mp3(text: str, out_path: str) -> None:
     _ensure_cfg()
-    comm = edge_tts.Communicate(text, CFG.get("push_tts_voice", "zh-CN-XiaoxiaoNeural"), rate=CFG.get("push_tts_rate", "+0%"))
+    voice = str(CFG.get("push_tts_voice", "ja-JP-NanamiNeural"))
+    # edge-tts 当前端点不接受 Azure Speech 的 HD/MAI 冒号 voice ID；
+    # 保留配置目标值，同时回落到可实测的标准 Nanami，避免静音或误用粤语兜底。
+    if ":DragonHD" in voice or ":MAI-" in voice:
+        fallback = str(CFG.get("push_tts_voice_fallback", "ja-JP-NanamiNeural"))
+        log(f"edge-tts 不支持 {voice}, 使用兼容声音 {fallback}")
+        voice = fallback
+    comm = edge_tts.Communicate(text, voice, rate=CFG.get("push_tts_rate", "+0%"))
     async for chunk in comm.stream():
         if chunk["type"] == "audio":
             with open(out_path, "ab") as f:
@@ -890,6 +930,64 @@ def _summarize_for_speech(text: str, max_duration_s: float = 15.0) -> str:
     return prefix + _conclusion_fallback(text, max_chars)
 
 
+_ENGLISH_TTS_TOKEN_RE = re.compile(
+    r"\b[A-Za-z][A-Za-z0-9_./:+#@%\-]*(?:\s+[A-Za-z][A-Za-z0-9_./:+#@%\-]*)*\b"
+)
+
+
+def _translate_for_japanese_tts(text: str) -> str:
+    """仅把中文片段翻成日语，英文片段保持原文，字幕文本不受影响。"""
+    _ensure_cfg()
+    text = str(text or "").strip()
+    voice = str(CFG.get("push_tts_voice", ""))
+    if not text or not voice.lower().startswith("ja-jp-") or not re.search(r"[\u4e00-\u9fff]", text):
+        return text
+
+    protected: list[str] = []
+
+    def protect(match: re.Match) -> str:
+        protected.append(match.group(0))
+        return f"__STACKCHAN_EN_{len(protected) - 1}__"
+
+    masked = _ENGLISH_TTS_TOKEN_RE.sub(protect, text)
+    host = str(CFG.get("local_llm_host", "http://127.0.0.1:11434"))
+    model = str(CFG.get("local_llm_model", "qwen3.5:9b"))
+    prompt = (
+        "将下面文本中的中文翻译成自然、简洁的日语，供语音播报使用。"
+        "所有形如 __STACKCHAN_EN_数字__ 的标记必须逐字原样保留，不能翻译、删除或改序；"
+        "标记恢复后其中的英文也必须保持英文。只输出翻译后的正文，不要解释、引号或 Markdown。\n\n"
+        f"文本：{masked}"
+    )
+    try:
+        payload = json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "think": False,
+            "options": {"num_predict": max(128, len(text) * 3)},
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{host.rstrip('/')}/api/chat", data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=12.0) as r:
+            out = json.loads(r.read().decode("utf-8"))
+        translated = str((out.get("message") or {}).get("content") or "").strip()
+        if not translated:
+            return text
+        for i, original in enumerate(protected):
+            token = f"__STACKCHAN_EN_{i}__"
+            if token not in translated:
+                log("日语 TTS 翻译未保留英文标记, 回退原文")
+                return text
+            translated = translated.replace(token, original)
+        log("日语 TTS 翻译完成(英文片段保留)")
+        return translated.strip("\"“”「」'") or text
+    except Exception as e:
+        log(f"日语 TTS 翻译失败, 回退原文: {e}")
+        return text
+
+
 def _conclusion_fallback(text: str, max_chars: int) -> str:
     """LLM 摘要不可用时的降级: 结论通常在结尾, 从尾部取完整结论句(≤max_chars),
     替代原先的头部硬截断 text[:max_chars]——避免"只说开头、丢了结论"。"""
@@ -1008,11 +1106,14 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
             pass
         else:
             text = _summarize_for_speech(text, max_duration_s=15.0)
+        # display_text 保持中文字幕；speech_text 仅供 TTS，中文转日语、英文原样保留。
+        display_text = text
+        speech_text = _translate_for_japanese_tts(display_text)
         topic = f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/push"
         client = _push_mqtt()
         # 先合成全部 µ-law 帧, 再发 START: 严禁机器人先进 Speaking 空等 TTS
         # (否则 3s 断流看门狗会误判为断流, 把帧全部丢弃 = 播报被掐掉)
-        frames = _tts_ulaw_frames(text)
+        frames = _tts_ulaw_frames(speech_text)
         # 句尾追加 240ms µ-law 静音缓冲帧(0xFF=静音): 确保最后一个词在硬件 DMA
         # 中完全发声后再发 STOP, 根治句尾吞字。
         silence_frame = b"\xff" * _PUSH_FRAME_BYTES
@@ -1020,11 +1121,11 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
         # QoS1 + 2帧/条批量: 每批 ~1922B; 固件订阅 QoS1, 公网 EMQX 丢包/断连时 broker 重投,
         # 根治 QoS0 静默丢帧导致的播报吞字(ACK 只证明 START 到达, 音频帧必须靠 QoS1 保送达)
         if msg_uid and action:
-            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + action.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=1)
+            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + action.encode("utf-8") + b"\x00" + display_text.encode("utf-8"), qos=1)
         elif msg_uid:
-            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + text.encode("utf-8"), qos=1)
+            client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + display_text.encode("utf-8"), qos=1)
         else:
-            client.publish(topic, b"\x01" + text.encode("utf-8"), qos=1)
+            client.publish(topic, b"\x01" + display_text.encode("utf-8"), qos=1)
         for i in range(0, len(frames), _PUSH_BATCH_FRAMES):
             if i > 0:
                 time.sleep(_PUSH_BATCH_INTERVAL_S)  # 节流: 首包立发, 后续 170ms/批
@@ -1032,7 +1133,7 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
             payload = b"\x02" + bytes([len(batch)]) + b"".join(batch)
             client.publish(topic, payload, qos=1)
         client.publish(topic, b"\x03", qos=1)
-        return True, "ok", len(frames) * (_PUSH_FRAME_MS / 1000.0), text
+        return True, "ok", len(frames) * (_PUSH_FRAME_MS / 1000.0), display_text
     except Exception as e:
         return False, str(e), 0.0, ""
 
@@ -1450,12 +1551,15 @@ def build_http_app():
     mcp_app = mcp.streamable_http_app()
 
     async def healthz(request):
+        presence = _robot_presence_snapshot()
         return JSONResponse({
             "status": "ok",
             "pid": os.getpid(),
             "started_at": _PROC_START,
             "pending": pending_count(),
             "attached": robot_attached(),
+            "robot_presence": presence["state"],
+            "robot_presence_updated_at": presence["updated_at"],
             "tools": TOOL_NAMES,
         })
 
@@ -1610,6 +1714,9 @@ def main() -> None:
     except Exception as e:
         log(f"transport security config error: {e}")
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
+    # Subscribe before the first agent event so retained online/offline status is
+    # available to the tray even when no speech has been sent since startup.
+    threading.Thread(target=lambda: _push_mqtt(), daemon=True).start()
     threading.Thread(target=_push_worker, daemon=True).start()  # 单 Worker 串行推流(指标 1)
     threading.Thread(target=_robot_ping_loop, daemon=True).start()  # 每 5 分钟静默探活(托盘判断机器人在线)
     threading.Thread(target=_prewarm_local_llm, daemon=True).start()  # 预热本地 LLM, 首次长文本摘要不降级截断

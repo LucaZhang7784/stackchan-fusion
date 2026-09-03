@@ -1,5 +1,11 @@
 # CHANGELOG v08.13（2026-08-13）
 
+## v08.32（2026-09-03）：Cat 参数化面部
+
+- 增加公开的 `firmware/avatar-profiles/Cat.json`，作为 CoreS3 实时 LVGL Cat 面部的可审计参数源。
+- 增加 `firmware/cat_avatar_profile.md`，记录运行时绘制边界、参数映射和仅刷应用分区的部署约束。
+- 本次公开同步不包含设备配置、状态日志、认证信息或固件二进制产物。
+
 ## 配网误触/误入根治（固件 reference/stackchan-xiaozhi-firmware-mqtt）
 
 - **背景**：机器人反复出现"关机/重启后进入配网模式"。串口抓包定位到真凶：

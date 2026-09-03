@@ -3,6 +3,10 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / deepseek / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
+> v08.32（2026-09-03）：Cat 参数化面部——基于
+> [`firmware/avatar-profiles/Cat.json`](firmware/avatar-profiles/Cat.json) 将 CoreS3 的实时
+> LVGL 头像切换为橙金色椭圆眼、Omega 嘴型，并加入 4.5 秒眨眼、2 秒视线微动及
+> happy / angry / sad / doubt / sleepy 表情映射；仅刷入 `0x410000` 应用分区。
 > v08.30（2026-08-20）：心跳告警"旧会话残留"防误杀——修复前的旧会话活动
 > 不再误报钩子未触发。
 > v08.29（2026-08-20）：Antigravity hooks.json promlight 嵌套结构拒载自愈——

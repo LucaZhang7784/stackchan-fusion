@@ -55,12 +55,12 @@ import agents_core
 ROOT = Path(__file__).resolve().parent
 
 DEFAULT_CONFIG = {
-    "ota_url": "https://YOUR_FUNNEL_DOMAIN.ts.net/xiaozhi/ota/",
-    "robot_mac": "AA:BB:CC:DD:EE:FF",
-    "endpoint_health_url": "http://127.0.0.1:8004/mcp_endpoint/health?key=YOUR_HEALTH_KEY",
+    "ota_url": "https://dahuilucaaaaa.tail61f3fa.ts.net/xiaozhi/ota/",
+    "robot_mac": "68:ee:8f:d7:3f:14",
+    "endpoint_health_url": "http://127.0.0.1:8004/mcp_endpoint/health?key=9b55e82e498c4710b94a73d88ad1be3e",
     "docker_container": "xiaozhi-esp32-server",
     "docker_log_lookback_minutes": 120,
-    "auth_token": "YOUR_GATEWAY_TOKEN",
+    "auth_token": "${STACKCHAN_AUTH_TOKEN}",
     "allow_codex": True,
     "allow_claude": True,
     "codex_cli": "codex",
@@ -296,15 +296,17 @@ def _tts_text(text: str, limit: int = 180) -> str:
     return t
 
 
-_FFMPEG = r"ffmpeg"
+_FFMPEG = r"${STACKCHAN_ROOT}\tools\ffmpeg-9.0-essentials_build\bin\ffmpeg.exe"
 _push_client: paho.Client | None = None
 
 # ---- 加固 2: ACK 送达闭环(固件收到 START 回发 stackchan/{mac}/ack) ----
 _ACK_TIMEOUT_S = 2.0
 _RETRY_BACKOFF_S = 30
 _acked_texts: dict = {}
+_play_started: dict = {}
 _acked_lock = threading.Lock()
 _robot_presence = {"state": "unknown", "updated_at": 0.0}
+_robot_diag = {"state": "unknown", "reason": "", "offline_ms": 0, "updated_at": 0.0}
 _robot_presence_lock = threading.Lock()
 _recent_msg_uids: dict = {}  # 幂等记忆: msg_uid -> ts(5 分钟内重复上报静默丢弃)
 _photo_lock = threading.Lock()
@@ -319,9 +321,18 @@ def _status_topic() -> str:
     return f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/status"
 
 
+def _diag_topic() -> str:
+    return f"{CFG.get('push_topic_prefix', 'stackchan')}/{CFG.get('robot_mac', '')}/diag"
+
+
 def _robot_presence_snapshot() -> dict:
     with _robot_presence_lock:
         return dict(_robot_presence)
+
+
+def _robot_diag_snapshot() -> dict:
+    with _robot_presence_lock:
+        return dict(_robot_diag)
 
 
 def _photo_topic() -> str:
@@ -333,11 +344,21 @@ def _confirm_topic() -> str:
 
 
 def _on_ack(client, userdata, msg) -> None:
-    """固件 ACK 回执: payload 为 msg_uid(兼容旧固件的文本回执)。"""
+    """固件回执: 旧固件为 msg_uid，新固件支持 JSON {id,status}。"""
     try:
-        text = msg.payload.decode("utf-8", "replace")
+        raw = msg.payload.decode("utf-8", "replace").strip()
+        event_id, status = raw, "accepted"  # 保持对旧固件裸 msg_uid ACK 的兼容
+        if raw.startswith("{"):
+            payload = json.loads(raw)
+            event_id = str(payload.get("id") or "").strip()
+            status = str(payload.get("status") or "accepted").strip().lower()
+        if not event_id:
+            return
         with _acked_lock:
-            _acked_texts[text] = time.time()
+            if status == "play_start":
+                _play_started[event_id] = time.time()
+            else:
+                _acked_texts[event_id] = time.time()
     except Exception:
         pass
 
@@ -357,6 +378,23 @@ def _on_status(client, userdata, msg) -> None:
             _drain_pending()  # reconnected robot: resume preserved messages immediately
     except Exception as e:
         log(f"robot status handler error: {e}")
+
+
+def _on_diag(client, userdata, msg) -> None:
+    """固件离线原因在下一次 MQTT 重连后补发，供现场诊断而不依赖串口。"""
+    raw = msg.payload.decode("utf-8", "replace")
+    try:
+        payload = json.loads(raw)
+        state = str(payload.get("state") or "unknown")[:24]
+        reason = str(payload.get("reason") or "unknown")[:120]
+        offline_ms = int(payload.get("offline_ms") or 0)
+        with _robot_presence_lock:
+            _robot_diag.update({"state": state, "reason": reason,
+                                "offline_ms": offline_ms, "updated_at": time.time()})
+        log(f"robot diag {state}: {reason}, offline={offline_ms}ms")
+    except Exception as e:
+        # 保留原始诊断包的受限预览，供定位固件编码问题；不影响 ACK/推流链路。
+        log(f"robot diag handler error: {e}; raw={raw[:256]!r}")
 
 
 def _on_photo(client, userdata, msg) -> None:
@@ -424,6 +462,8 @@ def _on_push_message(client, userdata, msg) -> None:
             _on_ack(client, userdata, msg)
         elif topic.endswith("/status"):
             _on_status(client, userdata, msg)
+        elif topic.endswith("/diag"):
+            _on_diag(client, userdata, msg)
         elif topic.endswith("/photo"):
             _on_photo(client, userdata, msg)
         elif topic.endswith("/confirm"):
@@ -437,18 +477,25 @@ def _on_push_connect(client, userdata, flags, rc, properties=None) -> None:
     try:
         client.subscribe(_ack_topic(), 0)
         client.subscribe(_status_topic(), 1)
+        client.subscribe(_diag_topic(), 1)
         client.subscribe(_photo_topic(), 1)  # QoS1: 照片分块不许丢
         client.subscribe(_confirm_topic(), 1)  # Phase 9-B: 触屏审批回执 QoS1 不丢
     except Exception:
         pass
 
 
-def _wait_ack(text: str, timeout_s: float = _ACK_TIMEOUT_S) -> bool:
-    """等待固件对本次 START 的 ACK; 顺带清理 60s 前的旧 ACK。"""
+def _wait_ack(text: str, timeout_s: float = _ACK_TIMEOUT_S, allow_play_start: bool = False) -> bool:
+    """等待固件回执。
+
+    兼容旧固件的 accepted ACK；新固件的 play_start 是更强的证据，允许时可替代
+    QoS0 accepted，避免 accepted 丢失却已经起播时被错误标为 no-ack。
+    """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         with _acked_lock:
             if _acked_texts.get(text):
+                return True
+            if allow_play_start and _play_started.get(text):
                 return True
         time.sleep(0.1)
     with _acked_lock:
@@ -456,6 +503,23 @@ def _wait_ack(text: str, timeout_s: float = _ACK_TIMEOUT_S) -> bool:
         for k in stale:
             del _acked_texts[k]
     return False
+
+
+def _play_start_time(msg_uid: str, timeout_s: float = 2.0) -> float | None:
+    """返回固件 AudioOutputTask 第一帧入 I2S 时的回执到达时间。
+
+    这不是 MQTT START 收到时间：只有固件真正开始输出首帧时才会产生该回执。
+    """
+    if not msg_uid:
+        return None
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        with _acked_lock:
+            started_at = _play_started.get(msg_uid)
+        if started_at:
+            return started_at
+        time.sleep(0.05)
+    return None
 
 
 def _pending_has_id(entry_id: str) -> bool:
@@ -496,6 +560,7 @@ def _push_mqtt() -> paho.Client:
         _push_client.loop_start()
         _push_client.subscribe(_ack_topic(), 0)
         _push_client.subscribe(_status_topic(), 1)
+        _push_client.subscribe(_diag_topic(), 1)
         _push_client.subscribe(_photo_topic(), 1)
         _push_client.subscribe(_confirm_topic(), 1)
     return _push_client
@@ -506,7 +571,8 @@ _push_enqueued: set[str] = set()
 _enqueue_lock = threading.Lock()
 
 
-def _enqueue_push(text: str, source: str = "gateway", kind: str = "pending", record_id: str = "", action: str = "") -> None:
+def _enqueue_push(text: str, source: str = "gateway", kind: str = "pending", record_id: str = "", action: str = "",
+                  queued_at: float | None = None) -> None:
     """统一入队(线程安全)。所有主动推送(robot_say / agent_event / _drain_pending)
     必须走这里; 同一 record_id 只允许入队一次, 防轮询并发重复推流。"""
     with _enqueue_lock:
@@ -514,7 +580,8 @@ def _enqueue_push(text: str, source: str = "gateway", kind: str = "pending", rec
             return
         if record_id:
             _push_enqueued.add(record_id)
-    _push_queue.put({"text": str(text or ""), "source": source, "kind": kind, "id": record_id, "action": action})
+    _push_queue.put({"text": str(text or ""), "source": source, "kind": kind, "id": record_id,
+                     "action": action, "queued_at": queued_at or time.time()})
 
 
 def _pending_update(entry_id: str, pushed: bool | None = None, attempted_at: float | None = None) -> None:
@@ -578,8 +645,13 @@ _broadcast_history_lock = threading.Lock()
 _broadcast_history_append_count = 0
 
 
-def _broadcast_history_append(status: str, source: str, text: str) -> None:
-    """追加一条播报历史(status: ack=已送达 / no-ack=离线未确认 / fail=推送失败), 保留尾部 500 条。"""
+def _broadcast_history_append(status: str, source: str, text: str, delivery_latency_ms: int | None = None,
+                              play_start: bool | None = None, start_latency_ms: int | None = None) -> None:
+    """追加推送历史。
+
+    delivery_latency_ms 是 START 到机器人确认收到的耗时；start_latency_ms 是消息入队到
+    固件 AudioOutputTask 开始输出第一帧的端到端起播延迟。两者绝不混用。
+    """
     global _broadcast_history_append_count
     if not (text or "").strip():
         return
@@ -590,6 +662,12 @@ def _broadcast_history_append(status: str, source: str, text: str) -> None:
             "source": source or "",
             "text": text,
         }
+        if delivery_latency_ms is not None:
+            entry["delivery_latency_ms"] = max(0, int(delivery_latency_ms))
+        if play_start is not None:
+            entry["play_start"] = bool(play_start)
+        if start_latency_ms is not None:
+            entry["start_latency_ms"] = max(0, int(start_latency_ms))
         with _broadcast_history_lock:
             _BROADCAST_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(_BROADCAST_HISTORY_FILE, "a", encoding="utf-8") as f:
@@ -633,20 +711,34 @@ def _push_worker() -> None:
             if not text.strip():
                 _finish_push_record(kind, record_id, True)
                 continue
-            ok, err, dur, sent_text = push_send(text, msg_uid, action)
+            queued_at = float(item.get("queued_at") or time.time())
+            with _acked_lock:
+                _acked_texts.pop(msg_uid, None)
+                _play_started.pop(msg_uid, None)
+            ok, err, dur, sent_text, start_sent_at = push_send(text, msg_uid, action)
             if ok:
-                if _wait_ack(msg_uid or sent_text):
+                if _wait_ack(msg_uid or sent_text, allow_play_start=True):
+                    play_started_at = _play_start_time(msg_uid)
+                    with _acked_lock:
+                        accepted_at = _acked_texts.get(msg_uid or sent_text)
+                    delivery_latency_ms = (int((accepted_at - start_sent_at) * 1000)
+                                           if accepted_at and start_sent_at else None)
+                    start_latency_ms = (int((play_started_at - queued_at) * 1000)
+                                        if play_started_at else None)
                     log(f"push ack [{item.get('source')}]: {sent_text[:150]}")  # 记录实际播报文本(摘要后)
-                    _broadcast_history_append("ack", str(item.get("source") or ""), sent_text)
+                    _broadcast_history_append("ack", str(item.get("source") or ""), sent_text,
+                                              delivery_latency_ms, play_started_at is not None, start_latency_ms)
                     _finish_push_record(kind, record_id, True)  # 已送达 -> 标记 pushed
                 else:
                     log(f"push no-ack(机器人离线? 保留兜底): {sent_text[:150]}")
-                    _broadcast_history_append("no-ack", str(item.get("source") or ""), sent_text)
+                    _broadcast_history_append("no-ack", str(item.get("source") or ""), sent_text,
+                                              play_start=False)
                     _finish_push_record(kind, record_id, False)
                     pending_mark_attempted(record_id)  # 退避期内不重试
             else:
                 log(f"push fail: {err} :: {sent_text[:150] or text[:150]}")
-                _broadcast_history_append("fail", str(item.get("source") or ""), sent_text or text)
+                _broadcast_history_append("fail", str(item.get("source") or ""), sent_text or text,
+                                          play_start=False)
                 _finish_push_record(kind, record_id, False)
                 pending_mark_attempted(record_id)
             # 前一条播完(音频时长+0.5s)再取下一条
@@ -1090,12 +1182,12 @@ def _dsh_watcher_loop() -> None:
         time.sleep(20)
 
 
-def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str, float, str]:
+def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str, float, str, float | None]:
     """MQTT 主动推送: EdgeTTS 合成 -> 16k µ-law 60ms 帧 -> stackchan/{mac}/push。
     指标 3: 语音推流 ≤60 字口语化摘要(轨二 LLM 提炼, 失败降级截断); 完整原文由调用方保留在
     pending.jsonl 与日志。START 报头: \x01+msg_uid+\x00+action+\x00+text
     (Phase 8.1: action=done/question 驱动固件点头/偏头), 供固件 ACK 回执。
-    返回 (ok, err, 音频时长秒, 实际发送文本)。"""
+    返回 (ok, err, 音频时长秒, 实际发送文本, START 发出时刻)。"""
     try:
         # 播报规则: ≤50 字完整播报; >50 字 LLM 口语化摘要为 ≤50 字(失败降级截断)。
         # 先只做清洗不截断(limit 拉高), 保证摘要器拿到完整原文。
@@ -1120,6 +1212,7 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
         frames.extend([silence_frame] * 4)
         # QoS1 + 2帧/条批量: 每批 ~1922B; 固件订阅 QoS1, 公网 EMQX 丢包/断连时 broker 重投,
         # 根治 QoS0 静默丢帧导致的播报吞字(ACK 只证明 START 到达, 音频帧必须靠 QoS1 保送达)
+        start_sent_at = time.time()
         if msg_uid and action:
             client.publish(topic, b"\x01" + msg_uid.encode("utf-8") + b"\x00" + action.encode("utf-8") + b"\x00" + display_text.encode("utf-8"), qos=1)
         elif msg_uid:
@@ -1133,9 +1226,9 @@ def push_send(text: str, msg_uid: str = "", action: str = "") -> tuple[bool, str
             payload = b"\x02" + bytes([len(batch)]) + b"".join(batch)
             client.publish(topic, payload, qos=1)
         client.publish(topic, b"\x03", qos=1)
-        return True, "ok", len(frames) * (_PUSH_FRAME_MS / 1000.0), display_text
+        return True, "ok", len(frames) * (_PUSH_FRAME_MS / 1000.0), display_text, start_sent_at
     except Exception as e:
-        return False, str(e), 0.0, ""
+        return False, str(e), 0.0, "", None
 
 
 def _drain_pending() -> tuple[int, int]:
@@ -1155,7 +1248,11 @@ def _drain_pending() -> tuple[int, int]:
         text = str(o.get("text", "")).strip()
         if not text:
             continue
-        _enqueue_push(text, "pending", "pending", o.get("id", ""), str(o.get("action") or ""))
+        try:
+            queued_at = datetime.fromisoformat(str(o.get("created_at") or "")).timestamp()
+        except (TypeError, ValueError):
+            queued_at = time.time()
+        _enqueue_push(text, "pending", "pending", o.get("id", ""), str(o.get("action") or ""), queued_at)
         enqueued += 1
     return enqueued, 0
 
@@ -1552,6 +1649,7 @@ def build_http_app():
 
     async def healthz(request):
         presence = _robot_presence_snapshot()
+        diag = _robot_diag_snapshot()
         return JSONResponse({
             "status": "ok",
             "pid": os.getpid(),
@@ -1560,6 +1658,7 @@ def build_http_app():
             "attached": robot_attached(),
             "robot_presence": presence["state"],
             "robot_presence_updated_at": presence["updated_at"],
+            "robot_diag": diag,
             "tools": TOOL_NAMES,
         })
 
@@ -1709,7 +1808,7 @@ def main() -> None:
         from mcp.server.transport_security import TransportSecuritySettings
         mcp.settings.transport_security = TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "YOUR_TAILSCALE_IP:*"],
+            allowed_hosts=[f"{host}:{port}", "127.0.0.1:*", "localhost:*", "${TAILSCALE_HOST}:*"],
         )
     except Exception as e:
         log(f"transport security config error: {e}")

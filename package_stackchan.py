@@ -4,7 +4,7 @@ import os
 import shutil
 import zipfile
 
-ROOT = r"D:/PROJECT_ROOT\fusion.firmware.0731"
+ROOT = r"${STACKCHAN_ROOT}\fusion.firmware.0731"
 PKG = os.path.join(ROOT, "package-stackchan")
 FW_SRC = os.path.join(ROOT, "firmware", "post-fw-v1.2-mqttpush")
 

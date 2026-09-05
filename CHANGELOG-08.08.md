@@ -35,7 +35,24 @@
   调灯时必须同轮 `self.led.auto` 恢复。
 - 文件：`prompt-阿松-v3.md`（需贴回 xiaozhi.me 控制台）。
 
-## 4. 待办 / 下一阶段
+## 4. Antigravity hooks 结构根治（15:46, 真机复现→铁证→修复）
+
+- 现象：Antigravity 桌面版 15:22 崩溃重启后，hook 事件全部不再到达 `antigravity_hook.py`，
+  结论不进队列、机器人不播报（`antigravity_hook.log` 最后写入 13:29，会话 transcript 活动到 15:23）。
+- 铁证：`%APPDATA%\Antigravity\logs\language_server.log` 15:23:27：
+  `hooks.go:44 Failed to parse hooks file ...: invalid hook "stackchan": command hook
+  must specify 'command'` —— 11:16 改成的**顶层命名空间结构**（stackchan/promlight）被
+  语言服务器**整文件拒绝**。
+- 真相：Antigravity 桌面版只认**标准 Gemini hooks 结构**（顶层 `hooks` 键 +
+  `matcher` + `hooks[].command`）；支持事件名（从 language_server.exe 确认）：
+  SessionStart / PreToolUse / PostToolUse / PermissionRequest / PermissionDenied /
+  Elicitation / Stop / SessionEnd / Notification。
+- 修复：`~/.gemini/config/hooks.json` 重写为标准结构（7 事件，matcher `.*`，无 timeout；
+  promlight 段移除，备份 `hooks.json.bak-20260807-hooksgo`），JSON 校验通过、无 BOM。
+- 防复发：改 hooks.json 后必须重启 Antigravity 桌面版并确认 language_server.log
+  无 `Failed to parse hooks file`；MEMORY.md #16 已记录。
+
+## 5. 待办 / 下一阶段
 
 - 唤醒「阿松」聆听蓝灯验证（日志从未出现 `STATE LED -> listening`，疑云链路不驱动本地聆听态，需单独查）；
 - v3.6「调红」保固测试；
@@ -44,8 +61,9 @@
 - 本地粤语 TTS 调研：Ollama 无 TTS 能力；推荐 sherpa-onnx `vits-cantonese-hf-xiaomaiiwn`（小美）
   作断网兜底（EdgeTTS 正常时仍走云端）。
 
-## 5. 归档
+## 6. 归档
 
 - 本地 `version.08.08/` 全量快照（含 LED 修复固件产物 + firmware-src 源码快照 + restore.md +
   SUMMARY-2026-08-08.md）；
 - GitHub 公开副本同步（脱敏：MAC / Tailscale IP / 域名 / 密钥 / 用户路径 → 占位符）。
+

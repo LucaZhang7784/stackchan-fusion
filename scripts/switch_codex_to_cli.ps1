@@ -3,7 +3,7 @@ Write-Host "=============================================="
 Write-Host "Codex: uninstall Store version, keep CLI + data"
 Write-Host "=============================================="
 
-$backup = "D:/PROJECT_ROOT\fusion.firmware.0731\backup-codex-20260801"
+$backup = "${STACKCHAN_ROOT}\fusion.firmware.0731\backup-codex-20260801"
 if (-not (Test-Path (Join-Path $backup "auth.json"))) {
     Write-Host "ABORT: backup missing. Run the backup step first."
     exit 1

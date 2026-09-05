@@ -11,12 +11,12 @@ $ErrorActionPreference = "Stop"
 $settingsPath = Join-Path $env:USERPROFILE ".claude\settings.json"
 
 # 完整 Python 路径(与审计修正后的一致, 不依赖 PATH 里的 python)
-$python = "C:\Users\<USER>\AppData\Local\Programs\Python\Python311\python.exe"
+$python = "C:\Users\zhang.luca\AppData\Local\Programs\Python\Python311\python.exe"
 if (-not (Test-Path $python)) {
     $python = (Get-Command python -ErrorAction SilentlyContinue).Source
     if (-not $python) { throw "找不到 Python, 请先安装并配置 Python311" }
 }
-$hookScript = "D:/PROJECT_ROOT\fusion.firmware.0731\agents\claude_hook.py"
+$hookScript = "${STACKCHAN_ROOT}\fusion.firmware.0731\agents\claude_hook.py"
 # 命令用正斜杠: Claude Code 在 Windows 上经 bash 执行 hook 时反斜杠会被吃掉(实测 command not found)
 $hookCmd = "`"" + ($python -replace '\\', '/') + "`" `"" + ($hookScript -replace '\\', '/') + "`""
 

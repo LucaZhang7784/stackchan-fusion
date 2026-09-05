@@ -1,11 +1,5 @@
 # CHANGELOG v08.13（2026-08-13）
 
-## v08.32（2026-09-03）：Cat 参数化面部
-
-- 增加公开的 `firmware/avatar-profiles/Cat.json`，作为 CoreS3 实时 LVGL Cat 面部的可审计参数源。
-- 增加 `firmware/cat_avatar_profile.md`，记录运行时绘制边界、参数映射和仅刷应用分区的部署约束。
-- 本次公开同步不包含设备配置、状态日志、认证信息或固件二进制产物。
-
 ## 配网误触/误入根治（固件 reference/stackchan-xiaozhi-firmware-mqtt）
 
 - **背景**：机器人反复出现"关机/重启后进入配网模式"。串口抓包定位到真凶：
@@ -172,7 +166,7 @@
 
 ## v08.20（2026-08-15）：接入 DeepSeek Harness（dsh）
 
-- **背景**：本机已安装 DeepSeek 官方开源 agent harness（`C:\Users\<USER>\deepseek-harness`，
+- **背景**：本机已安装 DeepSeek 官方开源 agent harness（`C:\Users\zhang.luca\deepseek-harness`，
   v0.1.0-rc.5，Web UI 于 127.0.0.1:3080）。调研确认：有无头 CLI
   （`dsh --profile headless "任务"`，stdout 输出最终助手文本）；无桌面 hooks 体系；
   会话以 zstd 压缩事件流存于 `~/.dsh/sessions/**/session.jsonl.zstd`。
@@ -337,13 +331,19 @@
 
 - **根因复盘**：机器人重启时，Wi-Fi、云端激活和第二条 Push MQTT 订阅之间存在启动窗口；
   原托盘只能等一次播报 ACK 才判断在线，容易把“重连中”误标为离线。与此同时，托盘与
-  重启入口并发启动网关/云桥，可能造成 8010 端口占用与过期 PID 快照。
-- **固件**：第二条 MQTT 在连接后向 `stackchan/{mac}/status` 发布 retained `online`；
-  配置 QoS1 retained 遗嘱 `offline`，让 broker 在异常断连后自动更新状态。
-- **网关**：启动即订阅 status 主题，healthz 返回 `robot_presence` 与更新时间；机器人变
-  online 时立即尝试恢复保留的 pending 队列。
-- **托盘**：优先使用 MQTT status，显示“在线 / 重连中 / 离线”；对未刷新固件暂时兼容
-  最近 ACK 回退判定。
-- **单实例**：新增 Windows 命名启动锁；网关在 5 秒内确认真实绑定 8010 后才记录 PID；
-  托盘重启路径改为 stop-wait-start，避免端口竞态。
-- **COM 隔离**：串口诊断只接受 COM8 且校验 `VID_303A:PID_1001`；传入 COM3 会明确拒绝。
+  重启入口并发启动网关/云桥，曾出现 8010 端口占用与过期 PID 快照。
+- **固件（m5stack_core_s3.cc）**：第二条 MQTT 在连接后向
+  `stackchan/{mac}/status` 发布 retained `online`；配置 QoS1 retained 遗嘱 `offline`，
+  让 broker 在异常断连后自动更新状态。
+- **网关（gateway/fusion_gateway.py）**：启动即订阅 status 主题，healthz 返回
+  `robot_presence` 与更新时间；机器人变 online 时立即尝试恢复保留的 pending 队列。
+- **托盘（tray_collector.ps1）**：优先使用 MQTT status，显示“在线 / 重连中 / 离线”；
+  对未刷新固件暂时兼容最近 ACK 回退判定。
+- **单实例（run_gateway.ps1 / run_bridge.ps1 / restart_gateway.ps1）**：新增 Windows
+  命名启动锁；网关在 5 秒内确认真实绑定 8010 后才记录 PID；托盘“重启网关”统一走
+  stop-wait-start 脚本，避免端口竞态。
+- **COM 隔离（latency_check/capture_serial.py）**：串口诊断只接受
+  COM8 且校验 `VID_303A:PID_1001`；传入 COM3 会明确拒绝。
+- **验收**：Python/PowerShell 语法校验通过；固件重新编译并仅刷入 COM8 的
+  `0x410000` 应用分区（Hash verified）；新固件串口确认订阅 push 与发布 status online；
+  独立 QoS1 silent ping 收到匹配 ACK；保留队列随后恢复 ACK 清理。

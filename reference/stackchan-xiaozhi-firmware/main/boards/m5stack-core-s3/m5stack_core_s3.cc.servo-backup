@@ -1,0 +1,1366 @@
+#include "wifi_board.h"
+#include "cores3_audio_codec.h"
+#include "display/lcd_display.h"
+#include "application.h"
+#include "config.h"
+#include "power_save_timer.h"
+#include "i2c_device.h"
+#include "axp2101.h"
+
+#include <esp_log.h>
+#include <esp_heap_caps.h>
+#include <driver/i2c_master.h>
+#include <esp_lcd_panel_io.h>
+#include <esp_lcd_panel_ops.h>
+#include <esp_lcd_ili9341.h>
+#include <esp_timer.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+#include "esp_video.h"
+#include "lvgl.h"
+#include "SCSCL.h"
+
+// === StackChan servo control (yaw + pitch via UART_NUM_1 @ 1Mbps) ===
+class StackChanServo {
+public:
+    // UART_NUM_1 GPIO 6=TX 7=RX, servo ID: yaw=1 pitch=2
+    bool Begin() {
+        if (!bus_.begin(UART_NUM_1, 1000000, 6, 7)) {
+            ESP_LOGE("Servo", "SCS bus begin failed");
+            return false;
+        }
+        ESP_LOGI("Servo", "SCS bus init OK on UART1 GPIO6/7 @1Mbps");
+        // 启动时回正
+        MoveTo(0, 30, 1500);  // pitch 30° = 头略往上抬, 正常视线高度
+
+        // 启动 idle scan timer (4 秒一次随机角度)
+        esp_timer_create_args_t args = {};
+        args.callback = &StackChanServo::IdleScanCb;
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "servo_idle";
+        args.skip_unhandled_events = true;
+        esp_timer_create(&args, &idle_timer_);
+        esp_timer_start_periodic(idle_timer_, 4000000);  // 4s
+        scan_running_ = true;
+        return true;
+    }
+
+    // yaw: -45 ~ +45 度 (正前方为 0)
+    // pitch: 5 ~ 60 度 (建议 SAFE_PITCH_MIN=0 MAX=88, 我们收到 5~60 更保守)
+    void MoveTo(int yaw_deg, int pitch_deg, int time_ms) {
+        if (yaw_deg < -45) yaw_deg = -45;
+        if (yaw_deg > 45) yaw_deg = 45;
+        if (pitch_deg < 5) pitch_deg = 5;
+        if (pitch_deg > 60) pitch_deg = 60;
+        // 转换公式来自 stackchan-mcp: pos = center + deg * 16/5
+        int yaw_pos = 460 + yaw_deg * 16 / 5;
+        int pitch_pos = 620 + pitch_deg * 16 / 5;
+        bus_.WritePos(1, yaw_pos, time_ms, 0);
+        bus_.WritePos(2, pitch_pos, time_ms, 0);
+    }
+
+    void PauseScan() {
+        if (scan_running_ && idle_timer_) {
+            esp_timer_stop(idle_timer_);
+            scan_running_ = false;
+        }
+    }
+
+    void ResumeScan() {
+        if (!scan_running_ && idle_timer_) {
+            esp_timer_start_periodic(idle_timer_, 4000000);
+            scan_running_ = true;
+        }
+    }
+
+    void Center() { MoveTo(0, 30, 600); }
+
+private:
+    static void IdleScanCb(void* arg) {
+        auto* self = static_cast<StackChanServo*>(arg);
+        // 随机 yaw -25~+25, pitch 25~35 (默认 30 上下 5)
+        int yaw = (rand() % 51) - 25;
+        int pitch = 25 + (rand() % 11);  // 25 ~ 35
+        self->MoveTo(yaw, pitch, 1500);
+    }
+
+    SCSCL bus_;
+    esp_timer_handle_t idle_timer_ = nullptr;
+    bool scan_running_ = false;
+};
+
+namespace shizhou_avatar {
+
+enum class Expression {
+    Neutral, Happy, Angry, Sad, Sleepy,
+    Loving, Crying,
+    Kissy, Cool, Confident,
+    Shocked, Thinking, Surprised, Confused,
+    Embarrassed, Silly, Winking, Laughing, Funny, Relaxed, Delicious
+};
+
+struct Overlay {
+    bool tear = false;           // crying  蓝泪滴
+    bool heart_eyes = false;     // loving  心眼 (替代眼睛)
+    bool kiss_heart = false;     // kissy   嘴边飞心
+    bool cheek_blush = false;    // embarrassed 脸颊斜线 ⸝⸝⸝
+    bool cool_glasses = false;   // cool    蛤蟆镜
+    bool excl_mark = false;      // shocked 感叹号
+    bool think_bubble = false;   // thinking 云朵
+    bool star_burst = false;     // surprised 四角星 ✦
+    bool wave_squiggle = false;  // silly   头顶小波浪 ~
+    bool drool = false;          // delicious 嘴角口水
+    bool laugh_lines = false;    // funny   圆头气流线
+    bool question_mark = false;  // confused 问号 ?
+    bool zzz = false;            // sleepy  右上角飘 zzz
+};
+
+// Geometry copied verbatim from meganetaaan/m5stack-avatar Face/Eye/Mouth defaults.
+// 320x240 canvas. Yellow background / black foreground (classic M5 "soybean" look).
+class LvglAvatar {
+public:
+    LvglAvatar() = default;
+    ~LvglAvatar() { Destroy(); }
+
+    bool Init(lv_obj_t* parent, int w, int h) {
+        if (canvas_) return true;
+        w_ = w; h_ = h;
+        size_t bytes = (size_t)w * h * 2;
+        buf_ = (uint8_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+        if (!buf_) return false;
+        canvas_ = lv_canvas_create(parent);
+        lv_canvas_set_buffer(canvas_, buf_, w, h, LV_COLOR_FORMAT_RGB565);
+        lv_obj_align(canvas_, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_clear_flag(canvas_, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_move_background(canvas_);
+        timer_ = lv_timer_create(&LvglAvatar::TimerCb, 50, this);
+        next_blink_ms_ = 3000;
+        last_saccade_ms_ = 0;
+        Draw();
+        return true;
+    }
+
+    void Destroy() {
+        if (timer_) { lv_timer_delete(timer_); timer_ = nullptr; }
+        if (canvas_) { lv_obj_delete(canvas_); canvas_ = nullptr; }
+        if (buf_)   { heap_caps_free(buf_); buf_ = nullptr; }
+    }
+
+    bool IsReady() const { return canvas_ != nullptr; }
+
+    void SetExpression(Expression e) { expression_ = e; }
+    void SetOverlay(const Overlay& o) { overlay_ = o; }
+    void StartSpeaking(uint32_t duration_ms) {
+        speaking_until_ms_ = lv_tick_get() + duration_ms;
+    }
+    void StopSpeaking() { speaking_until_ms_ = 0; }
+
+private:
+    static void TimerCb(lv_timer_t* t) {
+        static_cast<LvglAvatar*>(lv_timer_get_user_data(t))->OnTick();
+    }
+
+    // 根据 expression 调整呼吸参数
+    void UpdateBreathParams() {
+        breath_amp_ = 3.0f;
+        breath_period_steps_ = 100;  // 5 秒
+        breath_paused_ = false;
+        switch (expression_) {
+            case Expression::Relaxed:
+                breath_amp_ = 7.0f;
+                breath_period_steps_ = 160;  // 8 秒
+                break;
+            case Expression::Shocked:
+                breath_paused_ = true;  // 震住不呼吸
+                break;
+            default: break;
+        }
+    }
+
+    bool BlinkAllowed() const {
+        switch (expression_) {
+            case Expression::Cool:
+            case Expression::Confident:
+            case Expression::Shocked:
+            case Expression::Winking:
+            case Expression::Kissy:
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    bool SlowBlink() const {
+        return expression_ == Expression::Thinking || expression_ == Expression::Relaxed;
+    }
+
+    bool SaccadeEnabled() const {
+        switch (expression_) {
+            case Expression::Cool:
+            case Expression::Confident:
+            case Expression::Shocked:
+            case Expression::Thinking:
+            case Expression::Embarrassed:
+            case Expression::Winking:
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    void GetGazeOverride(float* gh, float* gv) const {
+        switch (expression_) {
+            case Expression::Thinking:
+                *gh = 0; *gv = -1.0f; break;
+            case Expression::Embarrassed:
+                *gh = 0; *gv = 0.7f; break;
+            default:
+                *gh = gaze_h_; *gv = gaze_v_;
+        }
+    }
+
+    void OnTick() {
+        tick_count_++;
+        uint32_t now = lv_tick_get();
+
+        UpdateBreathParams();
+        if (breath_paused_) {
+            breath_ = 0;
+        } else {
+            breath_ = sinf((tick_count_ % breath_period_steps_) * 2.0f * 3.14159265f / breath_period_steps_);
+        }
+
+        // blink
+        if (BlinkAllowed()) {
+            if (now >= next_blink_ms_) {
+                uint32_t mult = SlowBlink() ? 2 : 1;
+                if (eye_closed_) {
+                    eye_open_ratio_ = 1.0f;
+                    next_blink_ms_ = now + mult * (2500 + (rand() % 2000));
+                    eye_closed_ = false;
+                } else {
+                    eye_open_ratio_ = 0.0f;
+                    next_blink_ms_ = now + 150 + (rand() % 200);
+                    eye_closed_ = true;
+                }
+            }
+        } else {
+            eye_open_ratio_ = 1.0f;
+            eye_closed_ = false;
+        }
+
+        // saccade
+        if (SaccadeEnabled() && now - last_saccade_ms_ > 1500) {
+            gaze_h_ = (rand() % 21 - 10) / 10.0f;
+            gaze_v_ = (rand() % 21 - 10) / 10.0f;
+            last_saccade_ms_ = now;
+        }
+
+        // mouth (lipsync when speaking)
+        bool speaking = (speaking_until_ms_ != 0 && now < speaking_until_ms_);
+        if (!speaking && speaking_until_ms_ != 0) speaking_until_ms_ = 0;
+        if (speaking) {
+            mouth_open_ = 0.2f + (rand() % 80) / 100.0f;
+        } else {
+            mouth_open_ = 0.0f;
+        }
+
+        Draw();
+    }
+
+    void Draw() {
+        if (!canvas_) return;
+        const lv_color_t bg = lv_color_make(0x00, 0x00, 0x00);
+        const lv_color_t fg = lv_color_make(0xFF, 0xFF, 0xFF);
+
+        lv_canvas_fill_bg(canvas_, bg, LV_OPA_COVER);
+        lv_layer_t layer;
+        lv_canvas_init_layer(canvas_, &layer);
+
+        DrawMouth(&layer, fg, bg);
+        DrawEye(&layer, fg, bg, /*is_left=*/false);
+        DrawEye(&layer, fg, bg, /*is_left=*/true);
+        DrawOverlay(&layer, fg, bg);
+
+        lv_canvas_finish_layer(canvas_, &layer);
+    }
+
+    // Filled axis-aligned rect (LVGL coords are inclusive on both ends)
+    void FillRect(lv_layer_t* layer, int x, int y, int w, int h, lv_color_t c) {
+        if (w <= 0 || h <= 0) return;
+        lv_draw_rect_dsc_t d;
+        lv_draw_rect_dsc_init(&d);
+        d.bg_color = c;
+        d.bg_opa = LV_OPA_COVER;
+        d.radius = 0;
+        d.border_width = 0;
+        lv_area_t a = {x, y, x + w - 1, y + h - 1};
+        lv_draw_rect(layer, &d, &a);
+    }
+
+    // Filled circle via radius=LV_RADIUS_CIRCLE rect
+    void FillCircle(lv_layer_t* layer, int cx, int cy, int r, lv_color_t c) {
+        if (r <= 0) return;
+        lv_draw_rect_dsc_t d;
+        lv_draw_rect_dsc_init(&d);
+        d.bg_color = c;
+        d.bg_opa = LV_OPA_COVER;
+        d.radius = LV_RADIUS_CIRCLE;
+        d.border_width = 0;
+        lv_area_t a = {cx - r, cy - r, cx + r - 1, cy + r - 1};
+        lv_draw_rect(layer, &d, &a);
+    }
+
+    void FillTriangle(lv_layer_t* layer, int x0, int y0, int x1, int y1, int x2, int y2, lv_color_t c) {
+        lv_draw_triangle_dsc_t d;
+        lv_draw_triangle_dsc_init(&d);
+        d.p[0].x = (float)x0; d.p[0].y = (float)y0;
+        d.p[1].x = (float)x1; d.p[1].y = (float)y1;
+        d.p[2].x = (float)x2; d.p[2].y = (float)y2;
+        d.color = c;
+        d.opa = LV_OPA_COVER;
+        lv_draw_triangle(layer, &d);
+    }
+
+    void FillRoundRect(lv_layer_t* layer, int x, int y, int w, int h, int radius, lv_color_t c) {
+        if (w <= 0 || h <= 0) return;
+        lv_draw_rect_dsc_t d;
+        lv_draw_rect_dsc_init(&d);
+        d.bg_color = c;
+        d.bg_opa = LV_OPA_COVER;
+        d.radius = radius;
+        d.border_width = 0;
+        lv_area_t a = {x, y, x + w - 1, y + h - 1};
+        lv_draw_rect(layer, &d, &a);
+    }
+
+    void DrawArc(lv_layer_t* layer, int cx, int cy, int r, int start_deg, int end_deg, int width, lv_color_t c, bool rounded = false) {
+        lv_draw_arc_dsc_t d;
+        lv_draw_arc_dsc_init(&d);
+        d.color = c;
+        d.opa = LV_OPA_COVER;
+        d.width = width;
+        d.center.x = cx;
+        d.center.y = cy;
+        d.radius = r;
+        d.start_angle = start_deg;
+        d.end_angle = end_deg;
+        d.rounded = rounded ? 1 : 0;
+        lv_draw_arc(layer, &d);
+    }
+
+    void DrawLine(lv_layer_t* layer, int x1, int y1, int x2, int y2, int width, bool round, lv_color_t c) {
+        lv_draw_line_dsc_t d;
+        lv_draw_line_dsc_init(&d);
+        d.color = c;
+        d.opa = LV_OPA_COVER;
+        d.width = width;
+        d.round_start = round ? 1 : 0;
+        d.round_end = round ? 1 : 0;
+        d.p1.x = (float)x1; d.p1.y = (float)y1;
+        d.p2.x = (float)x2; d.p2.y = (float)y2;
+        lv_draw_line(layer, &d);
+    }
+
+    // 单独控制两端圆头 (用于 arc 端 + line 端连接处, 避免 cap 凸出)
+    void DrawLineEx(lv_layer_t* layer, int x1, int y1, int x2, int y2, int width,
+                    bool round_start, bool round_end, lv_color_t c) {
+        lv_draw_line_dsc_t d;
+        lv_draw_line_dsc_init(&d);
+        d.color = c;
+        d.opa = LV_OPA_COVER;
+        d.width = width;
+        d.round_start = round_start ? 1 : 0;
+        d.round_end = round_end ? 1 : 0;
+        d.p1.x = (float)x1; d.p1.y = (float)y1;
+        d.p2.x = (float)x2; d.p2.y = (float)y2;
+        lv_draw_line(layer, &d);
+    }
+
+    // --- Geometry (verbatim from m5stack-avatar Face default + Eye::draw, Mouth::draw) ---
+
+    // === DrawMouth: per-expression branches ===
+    void DrawMouth(lv_layer_t* layer, lv_color_t fg, lv_color_t bg) {
+        const int cx = 163;
+        const int cy = 148 + (int)(breath_ * 3.0f);
+        const int y_off = (int)(breath_ * 2.0f);
+
+        switch (expression_) {
+            case Expression::Cool:
+                // 微歪小弧 (右端高 2)
+                DrawLine(layer, cx - 12, cy + y_off + 2, cx + 12, cy + y_off, 3, true, fg);
+                return;
+            case Expression::Confident:
+                // 单边上翘弧 (右端高 3)
+                DrawLine(layer, cx - 14, cy + y_off + 3, cx + 14, cy + y_off, 3, true, fg);
+                return;
+            case Expression::Silly:
+                // 歪嘴更夸张 (左低右高 4)
+                DrawLine(layer, cx - 13, cy + y_off + 4, cx + 13, cy + y_off, 3, true, fg);
+                return;
+            case Expression::Embarrassed:
+                // 抿嘴小弧
+                DrawLine(layer, cx - 12, cy + y_off, cx + 12, cy + y_off, 3, true, fg);
+                return;
+            case Expression::Kissy: {
+                // 数字 "3" 字形嘴: 两段右半弧 + 中央连接点强制相接
+                int my = cy + y_off;
+                DrawArc(layer, cx, my - 6, 6, 270, 450, 3, fg, false);  // 上半 C
+                DrawArc(layer, cx, my + 6, 6, 270, 450, 3, fg, false);  // 下半 C
+                // 中央连接点 (盖住两段 arc 端点之间任何 gap, 两 arc 端点都在 (cx, my))
+                FillCircle(layer, cx, my, 2, fg);
+                return;
+            }
+            case Expression::Winking:
+                // U 形小笑弧 (下凸半圆)
+                DrawArc(layer, cx, cy + y_off - 5, 12, 0, 180, 3, fg);
+                return;
+            case Expression::Laughing: {
+                // 实心咧嘴 ᗜ + 两上角圆 (完全胶囊 80×30 圆角 12)
+                // 上沿: 12px 圆 + 56px 直 + 12px 圆, 下沿对称
+                // 整体上挪让嘴居中
+                int y_top = cy + y_off - 28;
+                FillRoundRect(layer, cx - 40, y_top, 80, 30, 12, fg);
+                return;
+            }
+            case Expression::Funny:
+                // 小张笑嘴: 圆角矩形 50x20 圆角 8
+                FillRoundRect(layer, cx - 25, cy + y_off - 10, 50, 20, 8, fg);
+                return;
+            case Expression::Relaxed:
+                // 短一字嘴 40 宽 圆头
+                DrawLine(layer, cx - 20, cy + y_off, cx + 20, cy + y_off, 4, true, fg);
+                return;
+            case Expression::Delicious: {
+                // 微张固定 (mouth_open=0.3) 圆角
+                int h = 4 + (int)((60 - 4) * 0.3f);
+                int w = 50 + (int)((90 - 50) * 0.7f);
+                FillRoundRect(layer, cx - w / 2, cy + y_off - h / 2, w, h, 7, fg);
+                return;
+            }
+            case Expression::Shocked: {
+                // 永远全张
+                FillRoundRect(layer, cx - 25, cy + y_off - 30, 50, 60, 10, fg);
+                return;
+            }
+            case Expression::Surprised: {
+                // 小 O 嘴 (mouth_open=0.5 固定)
+                int h = 4 + (int)((60 - 4) * 0.5f);
+                int w = 50 + (int)((90 - 50) * 0.5f);
+                FillRoundRect(layer, cx - w / 2, cy + y_off - h / 2, w, h, 12, fg);
+                return;
+            }
+            case Expression::Thinking: {
+                // 短一字嘴 30 宽
+                DrawLine(layer, cx - 15, cy + y_off, cx + 15, cy + y_off, 3, true, fg);
+                return;
+            }
+            case Expression::Confused: {
+                // 短一字嘴 30 宽 歪向一边 (右端下 2)
+                DrawLine(layer, cx - 15, cy + y_off, cx + 15, cy + y_off + 2, 3, true, fg);
+                return;
+            }
+            default: {
+                // Neutral/Happy/Angry/Sad/Sleepy/Loving/Crying: 沿用动态嘴 + 全局圆角
+                int h = 4 + (int)((60 - 4) * mouth_open_);
+                int w = 50 + (int)((90 - 50) * (1.0f - mouth_open_));
+                int radius = (int)(mouth_open_ * 10);  // 张越大圆角越大
+                FillRoundRect(layer, cx - w / 2, cy + y_off - h / 2, w, h, radius, fg);
+                return;
+            }
+        }
+    }
+
+    // === DrawEye: per-expression branches ===
+    void DrawEye(lv_layer_t* layer, lv_color_t fg, lv_color_t bg, bool is_left) {
+        // Cool: 不画眼 (墨镜接管)
+        if (expression_ == Expression::Cool) return;
+
+        const int cx_base = is_left ? 230 : 90;
+        const int cy_base_y = is_left ? 96 : 93;
+        const int cy = cy_base_y + (int)(breath_ * 3.0f);
+
+        float gh, gv;
+        GetGazeOverride(&gh, &gv);
+        const int off_x = (int)(gh * 3.0f);
+        const int off_y = (int)(gv * 3.0f);
+
+        // heart_eyes (loving): 完全替代眼睛
+        if (overlay_.heart_eyes) {
+            const lv_color_t red = lv_color_make(0xFF, 0x40, 0x70);
+            int hcx = cx_base + off_x;
+            int hcy = cy + off_y;
+            FillCircle(layer, hcx - 6, hcy - 3, 7, red);
+            FillCircle(layer, hcx + 6, hcy - 3, 7, red);
+            FillTriangle(layer, hcx - 12, hcy + 1, hcx + 12, hcy + 1, hcx, hcy + 13, red);
+            return;
+        }
+
+        // Shocked: 大圆眼 r=13 + 黑色瞳孔
+        if (expression_ == Expression::Shocked) {
+            FillCircle(layer, cx_base, cy, 13, fg);
+            FillCircle(layer, cx_base, cy, 3, bg);
+            return;
+        }
+
+        // Surprised: 圆眼 r=10
+        if (expression_ == Expression::Surprised) {
+            FillCircle(layer, cx_base, cy, 10, fg);
+            return;
+        }
+
+        // Confused: 两眼大小不一
+        if (expression_ == Expression::Confused) {
+            int r = is_left ? 8 : 6;
+            FillCircle(layer, cx_base + off_x, cy + off_y, r, fg);
+            return;
+        }
+
+        // Winking: 一闭一睁 (左眼 230 闭成 "<" 折角 尖朝左/朝脸中心, 右眼 90 圆睁)
+        if (expression_ == Expression::Winking) {
+            if (is_left) {
+                // "<" 形闭眼: 上线 + 下线, 尖朝左
+                DrawLine(layer, cx_base + 8, cy - 4, cx_base - 8, cy, 5, true, fg);
+                DrawLine(layer, cx_base - 8, cy, cx_base + 8, cy + 4, 5, true, fg);
+            } else {
+                FillCircle(layer, cx_base, cy, 8, fg);
+            }
+            return;
+        }
+
+        // Silly: 不对称眯眼 (Happy 风格 + 右眼弧度更小)
+        if (expression_ == Expression::Silly) {
+            int r = 8;
+            FillCircle(layer, cx_base + off_x, cy + off_y, r, fg);
+            int x0 = cx_base + off_x - r;
+            int y0 = cy + off_y;  // happy 是 y0 += r 的最终位置
+            int w = r * 2 + 4;
+            int h = r + 2;
+            if (!is_left) h += 2;  // 右眼 (is_left=false at 90) 遮更多 = 半睁
+            FillCircle(layer, cx_base + off_x, cy + off_y, (int)(r / 1.5f), bg);
+            FillRect(layer, x0, y0, w, h, bg);
+            return;
+        }
+
+        // Laughing: 深眯眼 (Happy 加宽加高)
+        if (expression_ == Expression::Laughing) {
+            int r = 8;
+            FillCircle(layer, cx_base + off_x, cy + off_y, r, fg);
+            int x0 = cx_base + off_x - r - 2;
+            int y0 = cy + off_y;
+            int w = r * 2 + 8;
+            int h = r + 4;
+            FillCircle(layer, cx_base + off_x, cy + off_y, (int)(r / 1.5f), bg);
+            FillRect(layer, x0, y0, w, h, bg);
+            return;
+        }
+
+        // Sleepy: 闭眼斜线 (´ ` 风格, 两眼歪向相反方向)
+        if (expression_ == Expression::Sleepy) {
+            if (is_left) {
+                // 左眼 (230, 96): \ 方向短斜线 (左上到右下)
+                DrawLine(layer, cx_base - 8 + off_x, cy - 2 + off_y,
+                                cx_base + 8 + off_x, cy + 2 + off_y, 4, true, fg);
+            } else {
+                // 右眼 (90, 93): / 方向短斜线 (左下到右上, 镜像)
+                DrawLine(layer, cx_base - 8 + off_x, cy + 2 + off_y,
+                                cx_base + 8 + off_x, cy - 2 + off_y, 4, true, fg);
+            }
+            return;
+        }
+
+        // Relaxed: 眯眼略深
+        if (expression_ == Expression::Relaxed) {
+            int r = 8;
+            FillCircle(layer, cx_base + off_x, cy + off_y, r, fg);
+            int x0 = cx_base + off_x - r - 1;
+            int y0 = cy + off_y - 1;
+            int w = r * 2 + 6;
+            int h = r + 3;
+            FillCircle(layer, cx_base + off_x, cy + off_y, (int)(r / 1.5f), bg);
+            FillRect(layer, x0, y0, w, h, bg);
+            return;
+        }
+
+        // Default flow: Neutral, Happy, Angry, Sad, Sleepy, Crying, Kissy, Confident, Thinking, Embarrassed, Funny, Delicious
+        const int r = 8;
+
+        if (eye_open_ratio_ > 0) {
+            FillCircle(layer, cx_base + off_x, cy + off_y, r, fg);
+
+            // Angry/Sad/Crying: 三角形遮挡 (Crying 跟 Sad 一样)
+            if (expression_ == Expression::Angry || expression_ == Expression::Sad || expression_ == Expression::Crying) {
+                int x0 = cx_base + off_x - r;
+                int y0 = cy + off_y - r;
+                int x1 = x0 + r * 2;
+                int y1 = y0;
+                bool sad = (expression_ == Expression::Sad || expression_ == Expression::Crying);
+                int x2 = ((!is_left) != (!sad)) ? x0 : x1;
+                int y2 = y0 + r;
+                FillTriangle(layer, x0, y0, x1, y1, x2, y2, bg);
+            }
+
+            // Happy/Kissy/Funny/Delicious: 弯月笑眼 (用 arc rounded 两端圆头)
+            // 用 arc 取代原 "半圆 + 遮罩" 画法, 自动消除尖角, 圆头自然
+            if (expression_ == Expression::Happy
+                || expression_ == Expression::Kissy || expression_ == Expression::Funny
+                || expression_ == Expression::Delicious) {
+                // 先把 base fg 圆完全抹掉 (放大 2px 避免边沿留下细白环)
+                FillCircle(layer, cx_base + off_x, cy + off_y, r + 2, bg);
+                // 上半弧 (圆心在原圆心下方让弧体往上凸 = '‿' 笑眼)
+                DrawArc(layer, cx_base + off_x, cy + off_y + r,
+                        r, 180, 360, 3, fg, true);
+            }
+        } else {
+            // 闭眼横条 (默认眨眼)
+            FillRect(layer, cx_base - r + off_x, cy - 2 + off_y, r * 2, 4, fg);
+        }
+    }
+
+    // === DrawOverlay: 每个 overlay 标志一个分支 ===
+    void DrawOverlay(lv_layer_t* layer, lv_color_t fg, lv_color_t bg) {
+        // Crying: 蓝色泪滴 (圆主体+更大尖头, 形态更平衡像真水滴)
+        if (overlay_.tear) {
+            const lv_color_t blue = lv_color_make(0x40, 0xA0, 0xFF);
+            int tx = 90;
+            int ty = 115 + (int)(breath_ * 3.0f);
+            FillCircle(layer, tx, ty, 7, blue);
+            // 三角尖头放大: 高 13(原 9), 底 12(接近圆直径), 整体更像水滴不是圆+小尾巴
+            FillTriangle(layer, tx - 6, ty - 2, tx + 6, ty - 2, tx, ty - 15, blue);
+        }
+
+        // Embarrassed: 脸颊斜线 ⸝⸝⸝ (横排三条斜线, 像颜文字)
+        if (overlay_.cheek_blush) {
+            const lv_color_t pink = lv_color_make(0xFF, 0x64, 0x82);
+            // 两边都 ╱ 方向 (一致, 颜文字 ⸝⸝⸝ 字符同方向)
+            // 左脸颊
+            for (int i = 0; i < 3; i++) {
+                int x_start = 47 + i * 8;
+                int x_end = x_start + 6;
+                DrawLine(layer, x_start, 138, x_end, 130, 3, true, pink);
+            }
+            // 右脸颊 (同方向 ╱)
+            for (int i = 0; i < 3; i++) {
+                int x_start = 251 + i * 8;
+                int x_end = x_start + 6;
+                DrawLine(layer, x_start, 138, x_end, 130, 3, true, pink);
+            }
+        }
+
+        // Cool: 蛤蟆镜 + 上沿细线
+        if (overlay_.cool_glasses) {
+            FillRoundRect(layer, 85, 84, 50, 24, 5, fg);   // 左镜
+            FillRoundRect(layer, 185, 84, 50, 24, 5, fg);  // 右镜
+            DrawLine(layer, 85, 84, 235, 84, 2, false, fg);  // 上沿细线
+        }
+
+        // Shocked: 感叹号 ! (粗线 + 圆头 + 圆底点, 上下分开一些)
+        if (overlay_.excl_mark) {
+            DrawLine(layer, 291, 50, 291, 68, 4, true, fg);  // 竖线
+            FillCircle(layer, 291, 76, 2, fg);  // 圆底点 (y 73→76, 间距加大)
+        }
+
+        // Thinking: 扁椭圆 + 省略号 + 延伸链
+        if (overlay_.think_bubble) {
+            FillRoundRect(layer, 245, 47, 50, 25, 12, fg);  // 椭圆 (capsule)
+            // 椭圆内三个黑色省略号点 (像 "...")
+            FillCircle(layer, 258, 60, 3, bg);
+            FillCircle(layer, 270, 60, 3, bg);
+            FillCircle(layer, 282, 60, 3, bg);
+            // 延伸链 (3 点连成弧线, 中圆在椭圆正下偏右, 小圆飘向左下让出脸)
+            FillCircle(layer, 273, 85, 6, fg);  // 中圆 — 椭圆正下偏右一点(弧的转折)
+            FillCircle(layer, 258, 110, 4, fg); // 小圆 — 飘向左下, 避开脸中央
+        }
+
+        // Surprised: 真四角星 ✦ (4 三角形从中心辐射)
+        // 位置往下一点 (60→55→60), 避免顶上面白边
+        if (overlay_.star_burst) {
+            const int cx_s = 290, cy_s = 60;
+            // 中心小方块 6×6 (让四个三角根部连贯)
+            FillRect(layer, cx_s - 3, cy_s - 3, 6, 6, fg);
+            // 4 个细长三角形从中心辐射 (高 15, 底 6)
+            FillTriangle(layer, cx_s, cy_s - 18, cx_s - 3, cy_s - 3, cx_s + 3, cy_s - 3, fg);  // 上
+            FillTriangle(layer, cx_s, cy_s + 18, cx_s - 3, cy_s + 3, cx_s + 3, cy_s + 3, fg);  // 下
+            FillTriangle(layer, cx_s - 18, cy_s, cx_s - 3, cy_s - 3, cx_s - 3, cy_s + 3, fg);  // 左
+            FillTriangle(layer, cx_s + 18, cy_s, cx_s + 3, cy_s - 3, cx_s + 3, cy_s + 3, fg);  // 右
+        }
+
+        // Silly: 头顶小波浪 ~
+        if (overlay_.wave_squiggle) {
+            DrawLine(layer, 148, 28, 154, 24, 2, true, fg);
+            DrawLine(layer, 154, 24, 160, 28, 2, true, fg);
+            DrawLine(layer, 160, 28, 166, 24, 2, true, fg);
+            DrawLine(layer, 166, 24, 172, 28, 2, true, fg);
+        }
+
+        // Delicious: 蓝色口水 (小一号水珠形, 同 crying 风格但更小)
+        if (overlay_.drool) {
+            const lv_color_t blue = lv_color_make(0x40, 0xA0, 0xFF);
+            int dx = 143;
+            int dy = 168 + (int)(breath_ * 3.0f);
+            // 主体小圆 r=4
+            FillCircle(layer, dx, dy, 4, blue);
+            // 小尖 (高 6, 底 5)
+            FillTriangle(layer, dx - 3, dy - 2, dx + 3, dy - 2, dx, dy - 8, blue);
+        }
+
+        // Funny: 圆头气流线
+        if (overlay_.laugh_lines) {
+            DrawLine(layer, 210, 150, 220, 142, 3, true, fg);
+            DrawLine(layer, 218, 156, 228, 148, 3, true, fg);
+        }
+
+        // Confused: 问号 (一段 3/4 圆完成上弧+弯钩, 完全无拼接)
+        // 180°(左) → 顺时针 → 270°(上) → 0°(右) → 90°(下) = 3/4 圆
+        if (overlay_.question_mark) {
+            DrawArc(layer, 290, 50, 7, 180, 90, 4, fg, true);
+            FillCircle(layer, 290, 67, 3, fg);  // 底点
+        }
+
+        // Sleepy: 右上角飘三个递增大小的 z (粗线 + 圆头)
+        if (overlay_.zzz) {
+            // 每个 z = 上横 + 斜线 + 下横, 圆头
+            // width 参数: 小 z 用 2 (避免 size=8 时挤成团), 中大 z 用 3
+            // z 字本身是直角字体, 去圆头反而像 z (圆头在拐角处会凸出形成尖角)
+            auto draw_z = [&](int cx_z, int cy_z, int size, int w) {
+                int h = size / 2;
+                DrawLine(layer, cx_z - h, cy_z - h, cx_z + h, cy_z - h, w, false, fg);
+                DrawLine(layer, cx_z + h, cy_z - h, cx_z - h, cy_z + h, w, false, fg);
+                DrawLine(layer, cx_z - h, cy_z + h, cx_z + h, cy_z + h, w, false, fg);
+            };
+            draw_z(258, 80, 8, 2);    // 小 z 近脸
+            draw_z(270, 70, 10, 3);   // 中 z
+            draw_z(286, 55, 14, 3);   // 大 z 飘远
+        }
+
+        // Kissy: 嘴边小红心
+        if (overlay_.kiss_heart) {
+            const lv_color_t red = lv_color_make(0xFF, 0x40, 0x70);
+            int hx = 195;
+            int hy = 130;
+            FillCircle(layer, hx - 3, hy - 1, 4, red);
+            FillCircle(layer, hx + 3, hy - 1, 4, red);
+            FillTriangle(layer, hx - 6, hy + 1, hx + 6, hy + 1, hx, hy + 8, red);
+        }
+    }
+
+    lv_obj_t* canvas_ = nullptr;
+    uint8_t* buf_ = nullptr;
+    lv_timer_t* timer_ = nullptr;
+    int w_ = 320, h_ = 240;
+
+    Expression expression_ = Expression::Neutral;
+    Overlay overlay_;
+
+    uint32_t tick_count_ = 0;
+    uint32_t next_blink_ms_ = 0;
+    uint32_t last_saccade_ms_ = 0;
+    uint32_t speaking_until_ms_ = 0;
+    bool eye_closed_ = false;
+    float eye_open_ratio_ = 1.0f;
+    float mouth_open_ = 0.0f;
+    float breath_ = 0.0f;
+    float gaze_h_ = 0.0f;
+    float gaze_v_ = 0.0f;
+
+    // breath dynamic params (per expression)
+    float breath_amp_ = 3.0f;
+    uint32_t breath_period_steps_ = 100;
+    bool breath_paused_ = false;
+};
+
+// 21 emotion → Expression 1:1 映射
+static Expression MapEmotion(const char* e) {
+    if (!e) return Expression::Neutral;
+    if (!strcmp(e, "neutral"))     return Expression::Neutral;
+    if (!strcmp(e, "happy"))       return Expression::Happy;
+    if (!strcmp(e, "laughing"))    return Expression::Laughing;
+    if (!strcmp(e, "funny"))       return Expression::Funny;
+    if (!strcmp(e, "sad"))         return Expression::Sad;
+    if (!strcmp(e, "crying"))      return Expression::Crying;
+    if (!strcmp(e, "angry"))       return Expression::Angry;
+    if (!strcmp(e, "loving"))      return Expression::Loving;
+    if (!strcmp(e, "embarrassed")) return Expression::Embarrassed;
+    if (!strcmp(e, "surprised"))   return Expression::Surprised;
+    if (!strcmp(e, "shocked"))     return Expression::Shocked;
+    if (!strcmp(e, "thinking"))    return Expression::Thinking;
+    if (!strcmp(e, "winking"))     return Expression::Winking;
+    if (!strcmp(e, "cool"))        return Expression::Cool;
+    if (!strcmp(e, "relaxed"))     return Expression::Relaxed;
+    if (!strcmp(e, "delicious"))   return Expression::Delicious;
+    if (!strcmp(e, "kissy"))       return Expression::Kissy;
+    if (!strcmp(e, "confident"))   return Expression::Confident;
+    if (!strcmp(e, "sleepy"))      return Expression::Sleepy;
+    if (!strcmp(e, "silly"))       return Expression::Silly;
+    if (!strcmp(e, "confused"))    return Expression::Confused;
+    return Expression::Neutral;
+}
+
+static Overlay OverlayFor(const char* e) {
+    Overlay o;
+    if (!e) return o;
+    if (!strcmp(e, "crying"))      o.tear = true;
+    if (!strcmp(e, "loving"))      o.heart_eyes = true;
+    if (!strcmp(e, "kissy"))       o.kiss_heart = true;
+    if (!strcmp(e, "embarrassed")) o.cheek_blush = true;
+    if (!strcmp(e, "cool"))        o.cool_glasses = true;
+    if (!strcmp(e, "shocked"))     o.excl_mark = true;
+    if (!strcmp(e, "thinking"))    o.think_bubble = true;
+    if (!strcmp(e, "surprised"))   o.star_burst = true;
+    if (!strcmp(e, "silly"))       o.wave_squiggle = true;
+    if (!strcmp(e, "delicious"))   o.drool = true;
+    // funny: 去掉 overlay (气流线没明确语义), funny 单靠嘴形(50x20圆角张笑)与 happy(抿嘴) 区分
+    if (!strcmp(e, "confused"))    o.question_mark = true;
+    if (!strcmp(e, "sleepy"))      o.zzz = true;
+    return o;
+}
+
+}  // namespace shizhou_avatar
+
+class M5StackAvatarDisplay : public SpiLcdDisplay {
+public:
+    M5StackAvatarDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                          int width, int height, int offset_x, int offset_y,
+                          bool mirror_x, bool mirror_y, bool swap_xy)
+        : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy),
+          canvas_w_(width), canvas_h_(height) {
+        esp_timer_create_args_t args = {};
+        args.callback = &M5StackAvatarDisplay::InitTimerCallback;
+        args.arg = this;
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.name = "avatar_init";
+        args.skip_unhandled_events = true;
+        esp_timer_create(&args, &avatar_init_timer_);
+        esp_timer_start_periodic(avatar_init_timer_, 500000);
+
+        // idle timer: 8s no chat update -> hide top/status bars, back to pure face
+        esp_timer_create_args_t idle_args = {};
+        idle_args.callback = &M5StackAvatarDisplay::IdleTimerCallback;
+        idle_args.arg = this;
+        idle_args.dispatch_method = ESP_TIMER_TASK;
+        idle_args.name = "avatar_idle";
+        idle_args.skip_unhandled_events = true;
+        esp_timer_create(&idle_args, &idle_timer_);
+    }
+
+    void SetEmotion(const char* emotion) override {
+        SpiLcdDisplay::SetEmotion(emotion);
+        DisplayLockGuard lock(this);
+        if (!avatar_.IsReady()) return;
+        avatar_.SetExpression(shizhou_avatar::MapEmotion(emotion));
+        avatar_.SetOverlay(shizhou_avatar::OverlayFor(emotion));
+        // sleepy emotion = power save -> 强制 idle
+        if (emotion && strcmp(emotion, "sleepy") == 0) {
+            SetActiveLocked(false);
+        }
+    }
+
+    void SetChatMessage(const char* role, const char* content) override {
+        SpiLcdDisplay::SetChatMessage(role, content);
+        DisplayLockGuard lock(this);
+        if (!avatar_.IsReady()) return;
+        bool meaningful = role && content && content[0] != '\0'
+            && (strcmp(role, "user") == 0 || strcmp(role, "assistant") == 0);
+        if (meaningful) {
+            SetActiveLocked(true);
+            BumpIdleTimerLocked();
+        }
+        if (role && content && content[0] != '\0' && strcmp(role, "assistant") == 0) {
+            size_t n = strlen(content);
+            uint32_t ms = (uint32_t)(n * 120);
+            if (ms < 800) ms = 800;
+            if (ms > 15000) ms = 15000;
+            avatar_.StartSpeaking(ms);
+        } else if (role && (strcmp(role, "user") == 0 || strcmp(role, "system") == 0)) {
+            avatar_.StopSpeaking();
+        }
+    }
+
+    // SetStatus: 只对明确的 active 状态(聆听/说话/思考/连接)触发显示
+    // 其他状态(待机/异常/空)不强制隐藏, 让 idle timer 自然超时收回, 避免反复闪烁
+    void SetStatus(const char* status) override {
+        SpiLcdDisplay::SetStatus(status);
+        if (!status || !avatar_.IsReady()) return;
+        DisplayLockGuard lock(this);
+        bool is_active = (strstr(status, "聆听")
+                       || strstr(status, "说话")
+                       || strstr(status, "思考")
+                       || strstr(status, "连接")
+                       || strstr(status, "Listening")
+                       || strstr(status, "Speaking")
+                       || strstr(status, "Thinking")
+                       || strstr(status, "Connecting"));
+        if (is_active) {
+            SetActiveLocked(true);
+            BumpIdleTimerLocked();
+        }
+        // 其他状态不动, 由 idle timer 8 秒后自动收回
+    }
+
+private:
+    shizhou_avatar::LvglAvatar avatar_;
+    esp_timer_handle_t avatar_init_timer_ = nullptr;
+    esp_timer_handle_t idle_timer_ = nullptr;
+    bool active_mode_ = false;
+    int canvas_w_ = 320;
+    int canvas_h_ = 240;
+    static constexpr uint64_t IDLE_TIMEOUT_US = 8 * 1000 * 1000;  // 8 seconds
+
+    // Caller must hold DisplayLockGuard.
+    void SetActiveLocked(bool active) {
+        if (active == active_mode_) return;
+        active_mode_ = active;
+        if (active) {
+            if (top_bar_)    lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+            if (status_bar_) lv_obj_remove_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            if (top_bar_)    lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+            if (status_bar_) lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    // Caller must hold DisplayLockGuard (so we don't race with timer cb).
+    void BumpIdleTimerLocked() {
+        if (!idle_timer_) return;
+        esp_timer_stop(idle_timer_);  // no-op if not running
+        esp_timer_start_once(idle_timer_, IDLE_TIMEOUT_US);
+    }
+
+    static void IdleTimerCallback(void* arg) {
+        auto self = static_cast<M5StackAvatarDisplay*>(arg);
+        DisplayLockGuard lock(self);
+        self->SetActiveLocked(false);
+    }
+
+    static void InitTimerCallback(void* arg) {
+        auto self = static_cast<M5StackAvatarDisplay*>(arg);
+        self->TryInitAvatar();
+    }
+
+    void TryInitAvatar() {
+        DisplayLockGuard lock(this);
+        if (avatar_.IsReady()) {
+            ESP_LOGI("ShizhouAvatar", " already ready");
+            return;
+        }
+        lv_obj_t* screen = lv_screen_active();
+        ESP_LOGI("ShizhouAvatar", " tick screen=%p container=%p content=%p emoji_box=%p",
+                 screen, (void*)container_, (void*)content_, (void*)emoji_box_);
+        if (screen == nullptr) return;
+        if (container_ == nullptr) {
+            ESP_LOGI("ShizhouAvatar", " container_ not ready, wait");
+            return;
+        }
+
+        bool ok = avatar_.Init(screen, canvas_w_, canvas_h_);
+        ESP_LOGI("ShizhouAvatar", " Init() returned %d", (int)ok);
+        if (!ok) return;
+
+        // Compact-mode UI (M5 CoreS3) has no content_, only container_+emoji_box_+bars.
+        lv_obj_set_style_bg_opa(container_, LV_OPA_TRANSP, 0);
+        if (content_) lv_obj_set_style_bg_opa(content_, LV_OPA_TRANSP, 0);
+        if (emoji_box_) {
+            lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI("ShizhouAvatar", " emoji_box hidden");
+        }
+        // M5 原教旨：待机=纯脸。把头顶半透明信息条整片藏掉。
+        if (top_bar_)    lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+        if (status_bar_) lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        ESP_LOGI("ShizhouAvatar", " canvas mounted, top/status bars hidden");
+
+        if (avatar_init_timer_) {
+            esp_timer_stop(avatar_init_timer_);
+            esp_timer_delete(avatar_init_timer_);
+            avatar_init_timer_ = nullptr;
+        }
+    }
+};
+
+#define TAG "M5StackCoreS3Board"
+
+class Pmic : public Axp2101 {
+public:
+    // Power Init
+    Pmic(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : Axp2101(i2c_bus, addr) {
+        uint8_t data = ReadReg(0x90);
+        data |= 0b10110100;
+        WriteReg(0x90, data);
+        WriteReg(0x99, (0b11110 - 5));
+        WriteReg(0x97, (0b11110 - 2));
+        WriteReg(0x69, 0b00110101);
+        WriteReg(0x30, 0b111111);
+        WriteReg(0x90, 0xBF);
+        WriteReg(0x94, 33 - 5);
+        WriteReg(0x95, 33 - 5);
+    }
+
+    void SetBrightness(uint8_t brightness) {
+        brightness = ((brightness + 641) >> 5);
+        WriteReg(0x99, brightness);
+    }
+};
+
+class CustomBacklight : public Backlight {
+public:
+    CustomBacklight(Pmic *pmic) : pmic_(pmic) {}
+
+    void SetBrightnessImpl(uint8_t brightness) override {
+        pmic_->SetBrightness(target_brightness_);
+        brightness_ = target_brightness_;
+    }
+
+private:
+    Pmic *pmic_;
+};
+
+class Aw9523 : public I2cDevice {
+public:
+    // Exanpd IO Init
+    Aw9523(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : I2cDevice(i2c_bus, addr) {
+        WriteReg(0x02, 0b00000111);  // P0
+        WriteReg(0x03, 0b10001111);  // P1
+        WriteReg(0x04, 0b00011000);  // CONFIG_P0
+        WriteReg(0x05, 0b00001100);  // CONFIG_P1
+        WriteReg(0x11, 0b00010000);  // GCR P0 port is Push-Pull mode.
+        WriteReg(0x12, 0b11111111);  // LEDMODE_P0
+        WriteReg(0x13, 0b11111111);  // LEDMODE_P1
+    }
+
+    void ResetAw88298() {
+        ESP_LOGI(TAG, "Reset AW88298");
+        WriteReg(0x02, 0b00000011);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        WriteReg(0x02, 0b00000111);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    void ResetIli9342() {
+        ESP_LOGI(TAG, "Reset IlI9342");
+        WriteReg(0x03, 0b10000001);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        WriteReg(0x03, 0b10000011);
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+};
+
+class Ft6336 : public I2cDevice {
+public:
+    struct TouchPoint_t {
+        int num = 0;
+        int x = -1;
+        int y = -1;
+    };
+    
+    Ft6336(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : I2cDevice(i2c_bus, addr) {
+        uint8_t chip_id = ReadReg(0xA3);
+        ESP_LOGI(TAG, "Get chip ID: 0x%02X", chip_id);
+        read_buffer_ = new uint8_t[6];
+    }
+
+    ~Ft6336() {
+        delete[] read_buffer_;
+    }
+
+    void UpdateTouchPoint() {
+        ReadRegs(0x02, read_buffer_, 6);
+        tp_.num = read_buffer_[0] & 0x0F;
+        tp_.x = ((read_buffer_[1] & 0x0F) << 8) | read_buffer_[2];
+        tp_.y = ((read_buffer_[3] & 0x0F) << 8) | read_buffer_[4];
+    }
+
+    inline const TouchPoint_t& GetTouchPoint() {
+        return tp_;
+    }
+
+private:
+    uint8_t* read_buffer_ = nullptr;
+    TouchPoint_t tp_;
+};
+
+class M5StackCoreS3Board : public WifiBoard {
+private:
+    i2c_master_bus_handle_t i2c_bus_;
+    Pmic* pmic_;
+    Aw9523* aw9523_;
+    Ft6336* ft6336_;
+    LcdDisplay* display_;
+    EspVideo* camera_;
+    esp_timer_handle_t touchpad_timer_;
+    PowerSaveTimer* power_save_timer_;
+
+    void InitializePowerSaveTimer() {
+        // shizhou: seconds_to_shutdown=-1 -> dim+sleepy animation OK,
+        // never auto-poweroff (was 300 -> PMIC PowerOff -> need to re-pair Wi-Fi).
+        power_save_timer_ = new PowerSaveTimer(-1, 60, -1);
+        power_save_timer_->OnEnterSleepMode([this]() {
+            GetDisplay()->SetPowerSaveMode(true);
+            GetBacklight()->SetBrightness(10);
+        });
+        power_save_timer_->OnExitSleepMode([this]() {
+            GetDisplay()->SetPowerSaveMode(false);
+            GetBacklight()->RestoreBrightness();
+        });
+        power_save_timer_->OnShutdownRequest([this]() {
+            // shizhou: explicitly NOT calling pmic_->PowerOff() so we never
+            // lose Wi-Fi config. With seconds_to_shutdown=-1 this should never fire.
+        });
+        power_save_timer_->SetEnabled(true);
+    }
+
+    void InitializeI2c() {
+        // Initialize I2C peripheral
+        i2c_master_bus_config_t i2c_bus_cfg = {
+            .i2c_port = (i2c_port_t)1,
+            .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
+            .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
+            .clk_source = I2C_CLK_SRC_DEFAULT,
+            .glitch_ignore_cnt = 7,
+            .intr_priority = 0,
+            .trans_queue_depth = 0,
+            .flags = {
+                .enable_internal_pullup = 1,
+            },
+        };
+        ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
+    }
+
+    void I2cDetect() {
+        uint8_t address;
+        printf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\r\n");
+        for (int i = 0; i < 128; i += 16) {
+            printf("%02x: ", i);
+            for (int j = 0; j < 16; j++) {
+                fflush(stdout);
+                address = i + j;
+                esp_err_t ret = i2c_master_probe(i2c_bus_, address, pdMS_TO_TICKS(200));
+                if (ret == ESP_OK) {
+                    printf("%02x ", address);
+                } else if (ret == ESP_ERR_TIMEOUT) {
+                    printf("UU ");
+                } else {
+                    printf("-- ");
+                }
+            }
+            printf("\r\n");
+        }
+    }
+
+    void InitializeAxp2101() {
+        ESP_LOGI(TAG, "Init AXP2101");
+        pmic_ = new Pmic(i2c_bus_, 0x34);
+    }
+
+    void InitializeAw9523() {
+        ESP_LOGI(TAG, "Init AW9523");
+        aw9523_ = new Aw9523(i2c_bus_, 0x58);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    void PollTouchpad() {
+        static bool was_touched = false;
+        static int64_t touch_start_time = 0;
+        const int64_t TOUCH_THRESHOLD_MS = 500;  // 触摸时长阈值，超过500ms视为长按
+        
+        ft6336_->UpdateTouchPoint();
+        auto& touch_point = ft6336_->GetTouchPoint();
+        
+        // 检测触摸开始
+        if (touch_point.num > 0 && !was_touched) {
+            was_touched = true;
+            touch_start_time = esp_timer_get_time() / 1000; // 转换为毫秒
+        } 
+        // 检测触摸释放
+        else if (touch_point.num == 0 && was_touched) {
+            was_touched = false;
+            int64_t touch_duration = (esp_timer_get_time() / 1000) - touch_start_time;
+            
+            // 只有短触才触发
+            if (touch_duration < TOUCH_THRESHOLD_MS) {
+                auto& app = Application::GetInstance();
+                if (app.GetDeviceState() == kDeviceStateStarting) {
+                    EnterWifiConfigMode();
+                    return;
+                }
+                app.ToggleChatState();
+            }
+        }
+    }
+
+    void InitializeFt6336TouchPad() {
+        ESP_LOGI(TAG, "Init FT6336");
+        ft6336_ = new Ft6336(i2c_bus_, 0x38);
+        
+        // 创建定时器，20ms 间隔
+        esp_timer_create_args_t timer_args = {
+            .callback = [](void* arg) {
+                M5StackCoreS3Board* board = (M5StackCoreS3Board*)arg;
+                board->PollTouchpad();
+            },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "touchpad_timer",
+            .skip_unhandled_events = true,
+        };
+        
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &touchpad_timer_));
+        ESP_ERROR_CHECK(esp_timer_start_periodic(touchpad_timer_, 20 * 1000));
+    }
+
+    void InitializeSpi() {
+        spi_bus_config_t buscfg = {};
+        buscfg.mosi_io_num = GPIO_NUM_37;
+        buscfg.miso_io_num = GPIO_NUM_NC;
+        buscfg.sclk_io_num = GPIO_NUM_36;
+        buscfg.quadwp_io_num = GPIO_NUM_NC;
+        buscfg.quadhd_io_num = GPIO_NUM_NC;
+        buscfg.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
+        ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, SPI_DMA_CH_AUTO));
+    }
+
+    void InitializeIli9342Display() {
+        ESP_LOGI(TAG, "Init IlI9342");
+
+        esp_lcd_panel_io_handle_t panel_io = nullptr;
+        esp_lcd_panel_handle_t panel = nullptr;
+
+        ESP_LOGD(TAG, "Install panel IO");
+        esp_lcd_panel_io_spi_config_t io_config = {};
+        io_config.cs_gpio_num = GPIO_NUM_3;
+        io_config.dc_gpio_num = GPIO_NUM_35;
+        io_config.spi_mode = 2;
+        io_config.pclk_hz = 40 * 1000 * 1000;
+        io_config.trans_queue_depth = 10;
+        io_config.lcd_cmd_bits = 8;
+        io_config.lcd_param_bits = 8;
+        ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io));
+
+        ESP_LOGD(TAG, "Install LCD driver");
+        esp_lcd_panel_dev_config_t panel_config = {};
+        panel_config.reset_gpio_num = GPIO_NUM_NC;
+        panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
+        panel_config.bits_per_pixel = 16;
+        ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(panel_io, &panel_config, &panel));
+        
+        esp_lcd_panel_reset(panel);
+        aw9523_->ResetIli9342();
+
+        esp_lcd_panel_init(panel);
+        esp_lcd_panel_invert_color(panel, true);
+        esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
+        esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+
+        display_ = new M5StackAvatarDisplay(panel_io, panel,
+                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+    }
+
+     void InitializeCamera() {
+        static esp_cam_ctlr_dvp_pin_config_t dvp_pin_config = {
+            .data_width = CAM_CTLR_DATA_WIDTH_8,
+            .data_io = {
+                [0] = CAMERA_PIN_D0,
+                [1] = CAMERA_PIN_D1,
+                [2] = CAMERA_PIN_D2,
+                [3] = CAMERA_PIN_D3,
+                [4] = CAMERA_PIN_D4,
+                [5] = CAMERA_PIN_D5,
+                [6] = CAMERA_PIN_D6,
+                [7] = CAMERA_PIN_D7,
+            },
+            .vsync_io = CAMERA_PIN_VSYNC,
+            .de_io = CAMERA_PIN_HREF,
+            .pclk_io = CAMERA_PIN_PCLK,
+            .xclk_io = CAMERA_PIN_XCLK,
+        };
+
+        esp_video_init_sccb_config_t sccb_config = {
+            .init_sccb = false,
+            .i2c_handle = i2c_bus_,
+            .freq = 100000,
+        };
+
+        esp_video_init_dvp_config_t dvp_config = {
+            .sccb_config = sccb_config,
+            .reset_pin = CAMERA_PIN_RESET,
+            .pwdn_pin = CAMERA_PIN_PWDN,
+            .dvp_pin = dvp_pin_config,
+            .xclk_freq = XCLK_FREQ_HZ,
+        };
+
+        esp_video_init_config_t video_config = {
+            .dvp = &dvp_config,
+        };
+
+        camera_ = new EspVideo(video_config);
+        camera_->SetHMirror(false);
+    }
+
+public:
+    M5StackCoreS3Board() {
+        InitializePowerSaveTimer();
+        InitializeI2c();
+        InitializeAxp2101();
+        InitializeAw9523();
+        I2cDetect();
+        InitializeSpi();
+        InitializeIli9342Display();
+        InitializeCamera();
+        InitializeFt6336TouchPad();
+        GetBacklight()->RestoreBrightness();
+        servo_.Begin();  // 初始化舵机 + 启动待机扫描
+    }
+
+    StackChanServo* GetServo() { return &servo_; }
+
+private:
+    StackChanServo servo_;
+public:
+
+    virtual AudioCodec* GetAudioCodec() override {
+        static CoreS3AudioCodec audio_codec(i2c_bus_,
+            AUDIO_INPUT_SAMPLE_RATE,
+            AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_GPIO_MCLK,
+            AUDIO_I2S_GPIO_BCLK,
+            AUDIO_I2S_GPIO_WS,
+            AUDIO_I2S_GPIO_DOUT,
+            AUDIO_I2S_GPIO_DIN,
+            AUDIO_CODEC_AW88298_ADDR,
+            AUDIO_CODEC_ES7210_ADDR,
+            AUDIO_INPUT_REFERENCE);
+        return &audio_codec;
+    }
+
+    virtual Display* GetDisplay() override {
+        return display_;
+    }
+
+    virtual Camera* GetCamera() override {
+        return camera_;
+    }
+
+    virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
+        charging = pmic_->IsCharging();
+        discharging = pmic_->IsDischarging();
+        // shizhou: 充电时也保持 sleep timer enabled (避免 OLED 烧屏)
+        // 不再根据 discharging 切换 SetEnabled
+
+        level = pmic_->GetBatteryLevel();
+        return true;
+    }
+
+    virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+        if (level != PowerSaveLevel::LOW_POWER) {
+            power_save_timer_->WakeUp();
+        }
+        WifiBoard::SetPowerSaveLevel(level);
+    }
+
+    virtual Backlight *GetBacklight() override {
+        static CustomBacklight backlight(pmic_);
+        return &backlight;
+    }
+};
+
+DECLARE_BOARD(M5StackCoreS3Board);

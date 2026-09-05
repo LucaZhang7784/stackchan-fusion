@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $created = $false
 $mutex = New-Object System.Threading.Mutex($false, 'Local\StackChanXiaozhiBridgeLaunch', [ref]$created)
@@ -20,17 +20,15 @@ if (-not $line) {
 }
 $env:MCP_ENDPOINT = ($line -replace "^MCP_ENDPOINT=", "").Trim().Trim('"')
 
-$python = (Get-Command py.exe -ErrorAction SilentlyContinue).Source
-$pythonArgs = @('-3')
-if (-not $python) { $python = (Get-Command python.exe -ErrorAction SilentlyContinue).Source; $pythonArgs = @() }
-if (-not $python) { throw '未找到 Python 启动器或 python.exe' }
+$python = "C:\Users\zhang.luca\AppData\Local\Programs\Python\Python311\python.exe"
+if (-not (Test-Path $python)) { $python = (Get-Command python).Source }
 $pipe = Join-Path $root "mcp_pipe.py"
 $server = Join-Path $root "server.py"
 $log = Join-Path $root "bridge.log"
 $errLog = Join-Path $root "bridge.err"
 $pidFile = Join-Path $root "bridge.pid"
 
-$p = Start-Process -FilePath $python -ArgumentList (@($pythonArgs) + @("-u", "`"$pipe`"", "`"$server`"")) `
+$p = Start-Process -FilePath $python -ArgumentList @("-u", "`"$pipe`"", "`"$server`"") `
     -WorkingDirectory $root -WindowStyle Hidden `
     -RedirectStandardOutput $log -RedirectStandardError $errLog -PassThru
 $p.Id | Set-Content $pidFile

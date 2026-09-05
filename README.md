@@ -3,10 +3,12 @@
 让 **StackChan 桌面机器人**（M5Stack CoreS3）通过语音指挥本机的
 **codex / claude / deepseek / agy / pi / vscode** AI agent：查询状态、派发任务、播报结果、语音确认。
 
-> v08.32（2026-09-03）：Cat 参数化面部——基于
-> [`firmware/avatar-profiles/Cat.json`](firmware/avatar-profiles/Cat.json) 将 CoreS3 的实时
+> v08.32（2026-09-03）：Cat 参数化面部——基于 `Avatar/Cat.json` 将 CoreS3 的实时
 > LVGL 头像切换为橙金色椭圆眼、Omega 嘴型，并加入 4.5 秒眨眼、2 秒视线微动及
 > happy / angry / sad / doubt / sleepy 表情映射；仅刷入 `0x410000` 应用分区。
+> v08.33（2026-09-03）：Fusion 1–7 项整合——音频 `/push` 与表情/头部/动作/LED/校准 `/cmd`
+> 分面；控制命令统一 `v=1 + id + expires_at + ACK`；托盘 `/healthz` 显示 MQTT、Worker、队列、ACK；
+> 保留现有 cat 线稿表情与触摸显示文案，触摸事件改为短标签送云端。
 > v08.30（2026-08-20）：心跳告警"旧会话残留"防误杀——修复前的旧会话活动
 > 不再误报钩子未触发。
 > v08.29（2026-08-20）：Antigravity hooks.json promlight 嵌套结构拒载自愈——
@@ -89,6 +91,8 @@ xiaozhi-mcp 云桥接 (mcp_pipe.py + server.py, 本机)
    │
    ├── 播报链路: 单 Worker FIFO → EdgeTTS(粤语) → µ-law → EMQX MQTT
    │            (stackchan/{mac}/push, START 带 msg_uid, 固件 ACK 后点杀)
+   ├── 控制链路: 表情/头部/动作/LED → EMQX MQTT
+   │            (stackchan/{mac}/cmd, v1 JSON, 过期校验, ACK/完成回执)
    ├── codex   (Stop hook 带 msg_uid → 网关幂等入队)
    ├── claude  (Stop/SessionEnd/PermissionRequest hook + confirm_mcp 确认回环)
    ├── agy     (Antigravity fusion hooks)
@@ -114,6 +118,9 @@ xiaozhi-mcp 云桥接 (mcp_pipe.py + server.py, 本机)
 | 任务执行 | 「让 XX 做…」→ `agent_query`，在 agent 自己的可见窗口执行，结果回流播报 |
 | 确认回环 | claude 权限请求 → 机器人念问题 → 语音回答 → 回写 allow/deny（claude 完整支持） |
 | 设备控制 | 点头/摇头/转向/表情/拍照/LED（固件自动跟随状态灯） |
+
+控制命令与音频严格分题：`/push` 只承载 `[START][µ-law batch][STOP]`，`/cmd` 只承载短小的
+版本化 JSON。这样控制指令不会插入音频 FIFO；设备端对头部角度、移动时长和灯光 RGB 再做一次边界校验。
 
 ## 快速开始
 
@@ -185,9 +192,9 @@ python scripts\verify_connectivity.py
 
 | 服务 | 端口 | 说明 |
 |---|---|---|
-| 融合网关 | 8010 | 13 个 MCP 工具（含 robot_snap / local_query），Bearer 认证；单 Worker 推送 FIFO + msg_uid 幂等 |
+| 融合网关 | 8010 | 18 个 MCP 工具（含 robot_snap / robot_face / robot_head / robot_gesture / robot_led / robot_servo_calibrate），Bearer 认证；单 Worker 推送 FIFO + msg_uid 幂等 |
 | xiaozhi-mcp 云桥接 | — | mcp_pipe.py + server.py，心跳 60s |
-| EMQX 公共 broker | 1883 | 播报推送（broker-cn.emqx.io，QoS0 + 固件 ACK 确认） |
+| EMQX 公共 broker | 1883 | 音频 `/push` 与控制 `/cmd` 分题（broker-cn.emqx.io，QoS1 + 固件 ACK/完成回执） |
 | Codex↔机器人桥接 | — | `bridge/stackchan_mcp.js`（MCP stdio：check_task / respond） |
 | xiaozhi-esp32-server (Docker) | — | **已停用**（云链路不依赖） |
 | 系统托盘 | — | 状态监视 + 网关守护（单实例保护）+ 队列操作菜单（查看/清空）+「安装/修复 Claude Hooks」自愈菜单 |

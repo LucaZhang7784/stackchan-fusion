@@ -10,12 +10,12 @@
 1. Profile `stackchan` 已创建，包含 1 个远程服务器：
    - name: `fusion-gateway`
    - endpoint: `http://localhost:8010/mcp`（streamable-http + Bearer 认证）
-   - 源定义文件：`C:\Users\<USER>\.docker\mcp\catalogs\fusion-gateway.yaml`
+   - 源定义文件：`C:\Users\zhang.luca\.docker\mcp\catalogs\fusion-gateway.yaml`
 2. 已导出可移植配置：`docker/mcp-toolkit-profile.json`
 3. 已连接的客户端（全局/项目）：
    - Codex（全局）：`.codex/config.toml` → `[mcp_servers.MCP_DOCKER]`
    - Claude Code（全局）：`~/.claude.json` → `MCP_DOCKER`
-   - VS Code（项目）：`D:/PROJECT_ROOT\.vscode\mcp.json`
+   - VS Code（项目）：`${STACKCHAN_ROOT}\.vscode\mcp.json`
 4. 环境变量已持久化（用户级）：
    - `DOCKER_MCP_ALLOW_INSECURE_REMOTE_URLS=1`
    - 作用：允许 gateway 通过 http 连接本地 fusion-gateway（Toolkit 默认强制 https）
@@ -97,10 +97,10 @@ promlight server.py --transport http  (Windows 进程, 127.0.0.1:8011)
 
 ### 涉及文件
 
-- MCP server（stdio 默认 / `--transport http` 可选）：`C:\Users\<USER>\.opencode\mcp-servers\promlight\server.py`
-- catalog 定义：`C:\Users\<USER>\.docker\mcp\catalogs\promlight.yaml`
+- MCP server（stdio 默认 / `--transport http` 可选）：`C:\Users\zhang.luca\.opencode\mcp-servers\promlight\server.py`
+- catalog 定义：`C:\Users\zhang.luca\.docker\mcp\catalogs\promlight.yaml`
 - 自启动：计划任务 `PromLight-MCP`（登录时）+ `PromLight-MCPWatchdog`（每 5 分钟拉起），脚本
-  `C:\Users\<USER>\.opencode\mcp-servers\promlight\run_promlight_mcp.ps1`
+  `C:\Users\zhang.luca\.opencode\mcp-servers\promlight\run_promlight_mcp.ps1`
 - 灯态映射：`D:\PromLight\events.json`（work=黄灯常亮 / await·error=红灯闪烁 / idle·end=绿灯常亮）
 
 ### 验证（2026-08-03 已实测）

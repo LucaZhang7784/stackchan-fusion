@@ -2,7 +2,7 @@
   "mcpServers": {
     "xiaozhi-cloud-bridge": {
       "command": "python",
-      "args": ["D:/PROJECT_ROOT/fusion.firmware.0731/xiaozhi-mcp/server.py"]
+      "args": ["${STACKCHAN_ROOT}/fusion.firmware.0731/xiaozhi-mcp/server.py"]
     }
   }
 }

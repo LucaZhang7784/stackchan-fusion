@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Continue"
+﻿$ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $state = Join-Path $root 'state'
 New-Item -ItemType Directory -Force -Path $state | Out-Null

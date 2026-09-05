@@ -296,7 +296,7 @@ def normalize_agent(name: str) -> str:
 
 
 CREATE_NEW_CONSOLE = 0x00000010 if os.name == "nt" else 0
-PROJECT_ROOT = ROOT.parent.parent  # D:/PROJECT_ROOT
+PROJECT_ROOT = ROOT.parent.parent  # ${STACKCHAN_ROOT}
 VISIBLE_DIR = ROOT / "state" / "visible_runs"
 
 # 机器人驱动的任务: 在 agent 自己的可见窗口里执行(用户能看到过程与输出)。

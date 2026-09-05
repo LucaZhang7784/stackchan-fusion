@@ -1,11 +1,13 @@
-﻿$ErrorActionPreference = "SilentlyContinue"
+param([switch]$ShowQueue)
+
+$ErrorActionPreference = "SilentlyContinue"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 # 单实例保护: 已有托盘在跑(排除自身)则直接退出, 避免双图标
 $existingTray = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" |
     Where-Object { $_.CommandLine -match '(?i)-File\s+"?[^"]*fusion_tray\.ps1' -and $_.ProcessId -ne $PID }
-if ($existingTray) { exit 0 }
+if ($existingTray -and -not $ShowQueue) { exit 0 }
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $configPath = Join-Path $root 'config.json'
@@ -247,6 +249,11 @@ function Show-QueueMessages {
     $form.ShowDialog() | Out-Null
 }
 
+if ($ShowQueue) {
+    Show-QueueMessages
+    exit 0
+}
+
 function Show-BroadcastHistory {
     # 播报历史队列: state/broadcast_history.jsonl(由网关 _push_worker 记录 ack/no-ack/fail), 最近 50 条倒序展示
     $lines = @()
@@ -300,6 +307,7 @@ function Clear-QueueData {
         [System.IO.File]::WriteAllText($pendingFile, '', $utf8)
     }
     if ($all.Count) { [System.IO.File]::WriteAllLines($backup, $all, $utf8) }
+    # tray_status.json 仅允许采集器写入；Dash 与托盘在下一轮（最多 5 秒）读取一致快照。
     [System.Windows.Forms.MessageBox]::Show(
         "已清空队列($($all.Count) 条)。备份: $(Split-Path $backup -Leaf)",
         '清空队列', 'OK', 'Information') | Out-Null
@@ -663,10 +671,6 @@ function Build-Menu-Legacy {
         Start-Process -FilePath 'powershell.exe' `
             -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'restart_gateway.ps1')`"") `
             -WindowStyle Hidden | Out-Null
-        Start-Sleep -Seconds 1
-        Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'run_gateway.ps1')`"") `
-            -WindowStyle Hidden | Out-Null
     })
     $script:menu.Items.Add($itemRestart) | Out-Null
 
@@ -908,10 +912,6 @@ function Build-Menu {
         Start-Process -FilePath 'powershell.exe' `
             -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'restart_gateway.ps1')`"") `
             -WindowStyle Hidden | Out-Null
-        # restart_gateway.ps1 handles stop-wait-start atomically.
-        Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'run_gateway.ps1')`"") `
-            -WindowStyle Hidden | Out-Null
     })
     $script:menu.Items.Add($itemRestart) | Out-Null
 
@@ -933,7 +933,7 @@ function Build-Menu {
                 } catch { return -1 }
             }
             $lines = @()
-            $rc = Run-Hidden (Join-Path $gwDir 'restart_gateway.ps1'); Start-Sleep -Seconds 2
+            $rc = Run-Hidden (Join-Path $gwDir 'stop_gateway.ps1'); Start-Sleep -Seconds 2
             $rc2 = Run-Hidden (Join-Path $gwDir 'run_gateway.ps1')
             $lines += "网关: stop=$rc start=$rc2"
             $rc3 = Run-Hidden (Join-Path $mcpDir 'stop_bridge.ps1'); Start-Sleep -Seconds 2
@@ -961,6 +961,20 @@ function Build-Menu {
     })
     $script:menu.Items.Add($itemRestartAll) | Out-Null
 
+    # Native WPF Desktop Widget（资源管理器和托盘都走同一个静默启动器）
+    $itemWidget = New-Object System.Windows.Forms.ToolStripMenuItem
+    $itemWidget.Text = '打开 M5 StackChan Desktop Widget'
+    $itemWidget.ToolTipText = '打开紧凑桌面宠物、队列与链路状态窗口。'
+    $itemWidget.Add_Click({
+        $widget = Join-Path $root 'launch_stackchan_desktop_widget.vbs'
+        if (Test-Path -LiteralPath $widget) {
+            Start-Process -FilePath "$env:WINDIR\System32\wscript.exe" -ArgumentList @("`"$widget`"") -WindowStyle Hidden | Out-Null
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("未找到 Desktop Widget:`n$widget", 'M5 StackChan', 'OK', 'Error') | Out-Null
+        }
+    })
+    $script:menu.Items.Add($itemWidget) | Out-Null
+
     $script:menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 
     $itemExit = New-Object System.Windows.Forms.ToolStripMenuItem
@@ -981,7 +995,14 @@ function Get-CurrentStatus {
     try {
         if (Test-Path -LiteralPath $statusPath) {
             $age = ((Get-Date) - (Get-Item -LiteralPath $statusPath).LastWriteTime).TotalSeconds
-            if ($age -le 60) { return (Get-Content -Raw -LiteralPath $statusPath -Encoding UTF8 | ConvertFrom-Json) }
+            if ($age -le 60) {
+                # 允许采集器原子替换快照，避免读取时反向锁住写端。
+                $fs = [System.IO.File]::Open($statusPath, 'Open', 'Read', 'ReadWrite')
+                try {
+                    $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
+                    try { return ($sr.ReadToEnd() | ConvertFrom-Json) } finally { $sr.Dispose() }
+                } finally { $fs.Dispose() }
+            }
         }
     } catch { }
     return $null

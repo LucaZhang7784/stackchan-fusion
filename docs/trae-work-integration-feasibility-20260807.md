@@ -18,7 +18,7 @@
 
 | 项 | 证据 |
 |---|---|
-| TRAE SOLO CN 客户端已安装 | `%USERPROFILE%\AppData\Local\Programs\TRAE SOLO CN\TRAE SOLO CN.exe`（ProductVersion 0.1.43 / FileVersion 2.3.62834，北京引力弹弓科技，字节系） |
+| TRAE SOLO CN 客户端已安装 | `C:\Users\zhang.luca\AppData\Local\Programs\TRAE SOLO CN\TRAE SOLO CN.exe`（ProductVersion 0.1.43 / FileVersion 2.3.62834，北京引力弹弓科技，字节系） |
 | 客户端内含 Work / Code / Design 三模式 | `.trae-cn\builtin\` 下有 `work`、`code`、`design` 三套 builtin；`.trae-cn\work\` 有 7 月 22–25 日真实会话（水印检测脚本 detect_watermark.py / detect2.py + frame_sample.jpg） |
 | 曾启用 Claude Code 系插件 | `.trae-cn\plugin-config.json` 启用了 `wt-agent-hooks`、`superpowers`、`karpathy-skills`、`ponytail`（本地兼容版）；其中 **wt-agent-hooks 即 Antigravity 同款 hook 扩展** |
 | 已配置 MCP 与用户 Skill | `.trae-cn\mcps\solo_design_lite`、`.trae-cn\skills\credit-assessment-reporter`（user_upload） |
@@ -71,7 +71,7 @@ traecli login --with-trae-pat
   "version": 1,
   "hooks": {
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "python <PROJECT_ROOT>/fusion.firmware.0731/agents/trae_hook.py", "timeout": 30 }] }
+      { "hooks": [{ "type": "command", "command": "python ${USERPROFILE}/ProcessCenter/StackChan/fusion.firmware.0731/agents/trae_hook.py", "timeout": 30 }] }
     ],
     "Notification": [
       { "matcher": "idle_prompt|permission_prompt|ask_user_question", "hooks": [{ "type": "command", "command": "python .../trae_hook.py", "timeout": 30 }] }
@@ -146,3 +146,4 @@ traecli login --with-trae-pat
 - [TRAE CLI 非交互模式（火山引擎）](https://docs.volcengine.com/docs/86677/2227866?lang=zh)
 - [Agent Client Protocol (ACP)](https://docs.trae.cn/cli_agent-client-protocol)
 - [TRAE Work 客户端上线](https://docs.trae.cn/ide_trae-solo-is-now-available)
+

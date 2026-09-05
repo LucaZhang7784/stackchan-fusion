@@ -1,6 +1,6 @@
 # 融合补丁覆盖挂载 (与 server/docker-compose.yml 一起使用)
-#   docker compose -f D:/PROJECT_ROOT\server\docker-compose.yml ^
-#                  -f D:/PROJECT_ROOT\fusion.firmware.0731\server-patch\docker-compose.fusion.yml ^
+#   docker compose -f ${STACKCHAN_ROOT}\server\docker-compose.yml ^
+#                  -f ${STACKCHAN_ROOT}\fusion.firmware.0731\server-patch\docker-compose.fusion.yml ^
 #                  up -d xiaozhi-esp32-server
 services:
   xiaozhi-esp32-server:
@@ -10,17 +10,17 @@ services:
       - REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
       - SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     volumes:
-      - D:/PROJECT_ROOT/server/data/warp-ca.crt:/usr/local/share/ca-certificates/warp-ca.crt:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/fusion_push.py:/opt/xiaozhi-esp32-server/core/fusion_push.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/connection.py:/opt/xiaozhi-esp32-server/core/connection.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/http_server.py:/opt/xiaozhi-esp32-server/core/http_server.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/websocket_server.py:/opt/xiaozhi-esp32-server/core/websocket_server.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/providers/llm/openai/openai.py:/opt/xiaozhi-esp32-server/core/providers/llm/openai/openai.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/providers/llm/qwen_audio_realtime:/opt/xiaozhi-esp32-server/core/providers/llm/qwen_audio_realtime:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/providers/asr/aliyunbl_stream.py:/opt/xiaozhi-esp32-server/core/providers/asr/aliyunbl_stream.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/providers/asr/base.py:/opt/xiaozhi-esp32-server/core/providers/asr/base.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/providers/tts/edge.py:/opt/xiaozhi-esp32-server/core/providers/tts/edge.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/providers/tts/base.py:/opt/xiaozhi-esp32-server/core/providers/tts/base.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/handle/textHandler/listenMessageHandler.py:/opt/xiaozhi-esp32-server/core/handle/textHandler/listenMessageHandler.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/handle/receiveAudioHandle.py:/opt/xiaozhi-esp32-server/core/handle/receiveAudioHandle.py:ro
-      - D:/PROJECT_ROOT/fusion.firmware.0731/server-patch/core/handle/sendAudioHandle.py:/opt/xiaozhi-esp32-server/core/handle/sendAudioHandle.py:ro
+      - ${STACKCHAN_ROOT}/server/data/warp-ca.crt:/usr/local/share/ca-certificates/warp-ca.crt:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/fusion_push.py:/opt/xiaozhi-esp32-server/core/fusion_push.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/connection.py:/opt/xiaozhi-esp32-server/core/connection.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/http_server.py:/opt/xiaozhi-esp32-server/core/http_server.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/websocket_server.py:/opt/xiaozhi-esp32-server/core/websocket_server.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/providers/llm/openai/openai.py:/opt/xiaozhi-esp32-server/core/providers/llm/openai/openai.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/providers/llm/qwen_audio_realtime:/opt/xiaozhi-esp32-server/core/providers/llm/qwen_audio_realtime:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/providers/asr/aliyunbl_stream.py:/opt/xiaozhi-esp32-server/core/providers/asr/aliyunbl_stream.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/providers/asr/base.py:/opt/xiaozhi-esp32-server/core/providers/asr/base.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/providers/tts/edge.py:/opt/xiaozhi-esp32-server/core/providers/tts/edge.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/providers/tts/base.py:/opt/xiaozhi-esp32-server/core/providers/tts/base.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/handle/textHandler/listenMessageHandler.py:/opt/xiaozhi-esp32-server/core/handle/textHandler/listenMessageHandler.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/handle/receiveAudioHandle.py:/opt/xiaozhi-esp32-server/core/handle/receiveAudioHandle.py:ro
+      - ${STACKCHAN_ROOT}/fusion.firmware.0731/server-patch/core/handle/sendAudioHandle.py:/opt/xiaozhi-esp32-server/core/handle/sendAudioHandle.py:ro

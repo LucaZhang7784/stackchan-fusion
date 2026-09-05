@@ -1,7 +1,7 @@
 # 部署融合推送补丁: /api/push (服务器 TTS 直推设备) + SERVER_MCP 注册
 # 用法: powershell -ExecutionPolicy Bypass -File deploy_fusion_push.ps1
 param(
-  [string]$StackChanRoot = 'D:/PROJECT_ROOT'
+  [string]$StackChanRoot = '${STACKCHAN_ROOT}'
 )
 $ErrorActionPreference = 'Stop'
 $fusion = Join-Path $StackChanRoot 'fusion.firmware.0731'
@@ -9,7 +9,7 @@ $composeBase = Join-Path $StackChanRoot 'server\docker-compose.yml'
 $composeFusion = Join-Path $fusion 'server-patch\docker-compose.fusion.yml'
 $dataDir = Join-Path $StackChanRoot 'server\data'
 $configYaml = Join-Path $dataDir '.config.yaml'
-$fusionSecret = 'YOUR_GATEWAY_TOKEN'
+$fusionSecret = '${STACKCHAN_AUTH_TOKEN}'
 
 # 0) 确认补丁文件存在
 foreach ($f in @("$fusion\server-patch\core\fusion_push.py", "$fusion\server-patch\core\connection.py", "$fusion\server-patch\core\http_server.py")) {
@@ -64,7 +64,7 @@ if ($logs -match '服务端MCP客户端已连接' -and ($logs -match 'fusion' -o
   $logs -split "`r?`n" | Select-String -Pattern '服务端MCP客户端已连接|可用工具' | Select-Object -Last 3 | ForEach-Object { Write-Host "PASS: $_" }
 } else {
   Write-Host '注意: SERVER_MCP 注册在设备连接时才触发。请打开机器人电源等它重连, 然后运行:'
-  Write-Host '  python D:/PROJECT_ROOT\fusion.firmware.0731\scripts\verify_connectivity.py'
+  Write-Host '  python ${STACKCHAN_ROOT}\fusion.firmware.0731\scripts\verify_connectivity.py'
   Write-Host '网关与 /api/push 已就绪(/api/status 检查见上)。'
 }
 if (-not $ok) { Write-Host '部署未完全成功, 请检查后重试。'; exit 1 }

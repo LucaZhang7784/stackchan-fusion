@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Continue"
-$fwroot = "<PROJECT_ROOT>\fusion.firmware.0731"
+$fwroot = "${STACKCHAN_ROOT}\fusion.firmware.0731"
 $project = "$fwroot\reference\stackchan-xiaozhi-firmware-mqtt"
 $tmp = "$fwroot\firmware\build-mqttpush"
 $out = "$fwroot\firmware\post-fw-v1.2-mqttpush"

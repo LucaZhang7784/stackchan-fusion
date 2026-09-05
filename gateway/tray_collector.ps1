@@ -48,9 +48,10 @@ function Test-Gateway {
                   attached = if ($null -ne $r.attached) { [bool]$r.attached } else { $true };
                   startedAt = [string]$r.started_at; robotPresence = [string]$r.robot_presence;
                   robotPresenceUpdatedAt = $r.robot_presence_updated_at;
+                  robotDiag = $r.robot_diag;
                   detail = "PID=$($r.pid) 启动=$($r.started_at) 工具=$(@($r.tools).Count) 个" }
     } catch {
-        return @{ ok = $false; pid = 0; tools = 0; attached = $true; startedAt = ''; robotPresence = 'unknown'; robotPresenceUpdatedAt = 0; detail = "连接失败: $($_.Exception.Message)" }
+        return @{ ok = $false; pid = 0; tools = 0; attached = $true; startedAt = ''; robotPresence = 'unknown'; robotPresenceUpdatedAt = 0; robotDiag = $null; detail = "连接失败: $($_.Exception.Message)" }
     }
 }
 
@@ -120,7 +121,8 @@ function Get-CloudRobot {
 }
 
 function Get-BroadcastHistory {
-    # 读取播报历史尾部(最近 10 条), 返回 (条数, 最近一条摘要, 最近时间, 最近5条简表)
+    # 读取播报历史。起播率/起播延迟只采集有 play_start 字段的新固件记录，
+    # 绝不将旧的"整段推送处理耗时"混充为开始播报延迟。
     $hist = @()
     if (Test-Path -LiteralPath $historyFile) {
         $hist = @(Get-Content -LiteralPath $historyFile -Encoding UTF8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
@@ -128,6 +130,11 @@ function Get-BroadcastHistory {
     $last = ''
     $lastTs = ''
     $recent = @()
+    $today = Get-Date -Format 'yyyy-MM-dd'
+    $todayStarted = 0
+    $startOutcomes = 0
+    $startAcks = 0
+    $startLatencies = @()
     if ($hist.Count -gt 0) {
         try {
             $o = $hist[-1] | ConvertFrom-Json
@@ -145,8 +152,28 @@ function Get-BroadcastHistory {
                 $recent += "[$($o.ts)] [$($o.status)] $($o.source): $t"
             } catch { }
         }
+        foreach ($line in $hist) {
+            try {
+                $o = $line | ConvertFrom-Json
+                if (-not ([string]$o.ts).StartsWith($today)) { continue }
+                $status = [string]$o.status
+                # play_start = 固件已将首帧提交给音频输出驱动；缺失代表旧历史，不能纳入新指标。
+                if ($null -ne $o.play_start) {
+                    $startOutcomes++
+                    if ([bool]$o.play_start) {
+                        $startAcks++
+                        $todayStarted++
+                    }
+                    if ($null -ne $o.start_latency_ms -and [double]$o.start_latency_ms -gt 0) {
+                        $startLatencies += [double]$o.start_latency_ms
+                    }
+                }
+            } catch { }
+        }
     }
-    return $hist.Count, $last, $lastTs, $recent   # v08.27: 去掉前导逗号, histCount 为标量而非单元素数组
+    $successRate = if ($startOutcomes -gt 0) { '{0}%' -f [math]::Round(($startAcks * 100.0) / $startOutcomes) } else { '待采样' }
+    $avgLatency = if ($startLatencies.Count -gt 0) { '{0:N1}s' -f (($startLatencies | Measure-Object -Average).Average / 1000.0) } else { '待采样' }
+    return $hist.Count, $last, $lastTs, $recent, $todayStarted, $successRate, $avgLatency
 }
 
 function Get-RobotPresence {
@@ -185,11 +212,38 @@ function Get-HookFault {
 # 托盘内置守护(防抖 30s): 网关/云桥离线时静默拉起
 $script:lastGwRestart = [DateTime]::MinValue
 $script:lastBridgeRestart = [DateTime]::MinValue
+$script:gatewayFailureCount = 0
 function Restore-GatewayIfDown([bool]$ok) {
     if ($ok) { return }
     if (((Get-Date) - $script:lastGwRestart).TotalSeconds -lt 30) { return }
     $script:lastGwRestart = Get-Date
     try { Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$(Join-Path $root 'run_gateway.ps1')`"") -WindowStyle Hidden | Out-Null } catch { }
+}
+
+function Write-StatusSnapshot([string]$json) {
+    # 原子替换: 读端只能看到上一份完整快照或新快照，绝不读到半写入 JSON。
+    $tmp = "$statusFile.$PID.tmp"
+    $bak = "$statusFile.$PID.swap.bak"
+    try {
+        [System.IO.File]::WriteAllText($tmp, $json, $utf8)
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                if (Test-Path -LiteralPath $statusFile) {
+                    # Windows PowerShell/.NET Framework 不接受 null 作为 Replace 的备份路径。
+                    [System.IO.File]::Replace($tmp, $statusFile, $bak)
+                } else {
+                    [System.IO.File]::Move($tmp, $statusFile)
+                }
+                return
+            } catch {
+                if ($attempt -eq 3) { throw }
+                Start-Sleep -Milliseconds 80
+            }
+        }
+    } finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $bak) { Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue }
+    }
 }
 function Restore-BridgeIfDown([bool]$ok) {
     if ($ok) { return }
@@ -206,7 +260,10 @@ Write-Log "tray_collector 启动 PID=$PID"
 while ($true) {
     try {
         $gw = Test-Gateway
-        Restore-GatewayIfDown $gw.ok
+        if ($gw.ok) { $script:gatewayFailureCount = 0 } else { $script:gatewayFailureCount++ }
+        # 一次本机 HTTP 短暂抖动只显示刷新中；连续两轮（约 10 秒）失败才标红及自愈。
+        $gatewayConfirmedDown = ($script:gatewayFailureCount -ge 2)
+        Restore-GatewayIfDown $gatewayConfirmedDown
         $now = [Environment]::TickCount
         if ($script:lastMcpCheck -eq 0 -or ($now - $script:lastMcpCheck) -ge 30000) {
             $script:lastMcpCheck = $now
@@ -221,26 +278,32 @@ while ($true) {
         $presence = Get-RobotPresence $gw
         $hookFault = Get-HookFault
 
-        if (-not $gw.ok)                          { $state = 'bad';  $label = '网关离线' }
+        if ($gatewayConfirmedDown)                { $state = 'bad';  $label = '网关离线' }
+        elseif (-not $gw.ok)                      { $state = 'warn'; $label = '网关状态刷新中' }
         elseif ($presence.state -eq 'reconnecting') { $state = 'warn'; $label = '机器人重连中' }
         elseif (-not $presence.online)            { $state = 'bad';  $label = '机器人离线' }
         elseif (-not $mcp -or $hookFault)         { $state = 'warn'; $label = '组件异常' }
         else                                      { $state = 'ok';   $label = '全部正常' }
         if (-not $gw.attached) { $label = '已断开(不推流)' }
 
-        $detail = "【Gateway】$($gw.detail)`n【MCP】$(if($mcp){'profile stackchan 正常'}else{'profile stackchan 异常'})`n【Hook 自检】$(if($hookFault){'存在异常'}else{'正常'})`n【Robot 本体】$($presence.detail)`n【Robot 桥】bridge=$($bridge.proc) 进程, 心跳=$($bridge.hb) 分钟, 最近推送: $lastPush`n【播报队列】待推送 $($queue.pending) 条, 待播报事件 $($queue.events) 条, 待确认 $($queue.confirm) 个, 合计 $($queue.total) 条`n【播报历史】$($hist[1])`n【连接】$(if($gw.attached){'已连接机器人'}else{'已断开: 消息入队不推流, 连接后自动补推'})"
+        $diagText = ''
+        if ($gw.robotDiag -and [string]$gw.robotDiag.reason) { $diagText = "`n【MQTT 诊断】$($gw.robotDiag.state): $($gw.robotDiag.reason), 离线 $($gw.robotDiag.offline_ms)ms" }
+        $detail = "【Gateway】$($gw.detail)`n【MCP】$(if($mcp){'profile stackchan 正常'}else{'profile stackchan 异常'})`n【Hook 自检】$(if($hookFault){'存在异常'}else{'正常'})`n【Robot 本体】$($presence.detail)$diagText`n【Robot 桥】bridge=$($bridge.proc) 进程, 心跳=$($bridge.hb) 分钟, 最近推送: $lastPush`n【播报队列】待推送 $($queue.pending) 条, 待播报事件 $($queue.events) 条, 待确认 $($queue.confirm) 个, 合计 $($queue.total) 条`n【播报历史】$($hist[1])`n【连接】$(if($gw.attached){'已连接机器人'}else{'已断开: 消息入队不推流, 连接后自动补推'})"
 
+        $effectiveGwOk = ($gw.ok -or -not $gatewayConfirmedDown)
         $status = @{
             ts = (Get-Date -Format 'HH:mm:ss'); state = $state; label = $label
-            gwOk = $gw.ok; mcpOk = $mcp; robotOk = $bridge.online; gwPid = $gw.pid; tools = $gw.tools
+            gwOk = $effectiveGwOk; mcpOk = $mcp; robotOk = $bridge.online; gwPid = $gw.pid; tools = $gw.tools
             pending = $queue.pending; events = $queue.events; confirm = $queue.confirm; total = $queue.total
             lastPush = $lastPush; lastCall = $bridge.lastCall; bridgeProc = $bridge.proc; hbMin = $bridge.hb
             attached = $gw.attached; detail = $detail; robotOnline = $presence.online; robotPresence = $presence.state; hookFault = $hookFault
+            robotDiag = $gw.robotDiag
             histCount = $hist[0]; lastBroadcast = $hist[1]; lastBroadcastTs = $hist[2]; broadcastRecent = $hist[3]
+            broadcastToday = $hist[4]; broadcastSuccessRate = $hist[5]; avgLatency = $hist[6]
         }
-        [System.IO.File]::WriteAllText($statusFile, ($status | ConvertTo-Json -Compress), $utf8)
+        Write-StatusSnapshot ($status | ConvertTo-Json -Compress)
     } catch {
         Write-Log "tray_collector 采集异常: $($_.Exception.Message)"
     }
-    Start-Sleep -Seconds 20   # 托盘状态刷新周期 20s(2026-08-15)
+    Start-Sleep -Seconds 5    # Widget/托盘实时状态刷新周期
 }

@@ -20,6 +20,9 @@ backup-*/
 # IDE
 .vscode/
 .idea/
+widget/bin/
+widget/obj/
+gateway/widget_bin/
 
 # 固件 app 二进制(内嵌 OTA 域名/Tailscale IP, 公共仓不发布; 完整产物保留在本地 version.* 存档)
 firmware/**/xiaozhi.bin
@@ -28,3 +31,13 @@ firmware/**/merged-binary.bin
 
 # 本地 TTS 模型(可下载运行时产物, 不入库)
 gateway/tts_models/
+firmware/build-*/
+firmware/addr-src-*/
+firmware/post-fw-*/
+restore-kit-*/
+
+# Codex conversation artifacts and local repair backups
+gateway/thread-*
+gateway/*.bak-*
+agents/*.bak-*
+agents/_py_write_test.txt

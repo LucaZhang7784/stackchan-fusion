@@ -71,7 +71,7 @@ traecli login --with-trae-pat
   "version": 1,
   "hooks": {
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "python ${USERPROFILE}/ProcessCenter/StackChan/fusion.firmware.0731/agents/trae_hook.py", "timeout": 30 }] }
+      { "hooks": [{ "type": "command", "command": "python C:/Users/zhang.luca/ProcessCenter/StackChan/fusion.firmware.0731/agents/trae_hook.py", "timeout": 30 }] }
     ],
     "Notification": [
       { "matcher": "idle_prompt|permission_prompt|ask_user_question", "hooks": [{ "type": "command", "command": "python .../trae_hook.py", "timeout": 30 }] }

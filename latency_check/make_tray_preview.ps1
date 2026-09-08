@@ -37,7 +37,7 @@ function Draw-RobotIcon($path, $state, $gw, $mcp, $robot, $scale) {
     $bmp.Dispose()
 }
 
-$out = "${STACKCHAN_ROOT}\fusion.firmware.0731\latency_check"
+$out = "D:\ProcessCenter\StackChan\fusion.firmware.0731\latency_check"
 Draw-RobotIcon "$out\tray_robot_ok.png"   'ok'   $true  $true  $true  8
 Draw-RobotIcon "$out\tray_robot_warn.png" 'warn' $true  $false $true  8
 Draw-RobotIcon "$out\tray_robot_bad.png"  'bad'  $false $false $false 8

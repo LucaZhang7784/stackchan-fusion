@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Continue"
-$fwroot = "${STACKCHAN_ROOT}\fusion.firmware.0731"
+$fwroot = "D:\ProcessCenter\StackChan\fusion.firmware.0731"
 $project = "$fwroot\reference\stackchan-xiaozhi-firmware"
 $tmp = "$fwroot\firmware\build-phase71"
 $out = "$fwroot\firmware\post-fw-v1.1-phase7.1"

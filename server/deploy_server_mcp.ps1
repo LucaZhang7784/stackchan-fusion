@@ -1,7 +1,7 @@
-# 部署: 把融合网关注册进 xiaozhi-esp32-server 的 SERVER_MCP 通道
+﻿# 部署: 把融合网关注册进 xiaozhi-esp32-server 的 SERVER_MCP 通道
 # 用法: powershell -ExecutionPolicy Bypass -File deploy_server_mcp.ps1 [-SkipRestart]
 param(
-  [string]$StackChanRoot = '${STACKCHAN_ROOT}',
+  [string]$StackChanRoot = 'D:\ProcessCenter\StackChan',
   [switch]$SkipRestart
 )
 $ErrorActionPreference = 'Stop'

@@ -26,12 +26,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "esp_video.h"
 #include "lvgl.h"
 #include "SCSCL.h"
 #include "i2c_bus.h"
 #include "bmi270_api.h"
 #include "bmi2.h"
+#include "device_control_secret.h"
+#include <mbedtls/md.h>
 
 // BMI270 SDK 在 .a 里有这些 public 符号但头文件未暴露——自己声明用来绕过 bmi270_sensor_create 硬编码 0x68 的限制
 extern "C" {
@@ -64,19 +67,10 @@ static void Bmi270DelayUs(uint32_t period_us, void *intf_ptr) {
 
 #define TAG "M5StackCoreS3Board"
 
-// 云链路主动推送 broker 列表(按 SSID 智能路由):
-// 主网 DHSDWireless -> EMQX 公共 broker 优先(中国区可达), 局域网/Tailscale/Funnel 降级;
-// 异地/新 Wi-Fi -> 跳过局域网, 直接 EMQX/Tailscale/Funnel。
-static const char* const kPushMqttUrisLan[] = {
-    "mqtt://broker-cn.emqx.io:1883",             // 0: EMQX 公共 broker(首选; AP 隔离实测 LAN 不可达)
-    "mqtt://10.31.28.224:1883",                  // 1: 局域网直连(若 AP 隔离解除可提速)
-    "mqtt://${TAILSCALE_HOST}:1883",                 // 2: Tailscale IP
-    "wss://dahuilucaaaaa.tail61f3fa.ts.net:443/mqtt"  // 3: Funnel 公网(兜底); 显式端口防 set_uri 端口错乱
-};
-static const char* const kPushMqttUrisRemote[] = {
-    "mqtt://broker-cn.emqx.io:1883",             // 0: EMQX 公共 broker(中国区, 首选)
-    "mqtt://${TAILSCALE_HOST}:1883",                 // 1: Tailscale IP
-    "wss://dahuilucaaaaa.tail61f3fa.ts.net:443/mqtt"  // 2: Funnel 公网(兜底); 显式端口防 set_uri 端口错乱
+// 云链路主动推送 broker: 当前只走 EMQX 公共入口。
+// 保留一个 URI，避免局域网/Tailscale/Funnel failover 反复切换造成在线状态抖动。
+static const char* const kPushMqttUris[] = {
+    "mqtt://broker-cn.emqx.io:1883",
 };
 
 class FaceTracker;
@@ -435,7 +429,7 @@ static bool EnableServoPowerViaPy32(i2c_master_bus_handle_t i2c_bus) {
 
 namespace shizhou_avatar {
 
-// Face profile compiled from ${STACKCHAN_ROOT}\Avatar\Cat.json.
+// Face profile compiled from D:\ProcessCenter\StackChan\Avatar\Cat.json.
 // The xiaozhi assets partition stores image packs, while this CoreS3 face is a
 // live LVGL canvas; keeping the profile here preserves its blink, gaze and lip
 // animation without introducing a second runtime asset format.
@@ -1567,14 +1561,17 @@ private:
     int64_t push_last_offline_since_ms_ = 0;
     bool push_last_offline_pending_ = false;
     std::string push_last_offline_reason_;
-    const char* const* push_mqtt_uris_ = kPushMqttUrisRemote;
-    int push_mqtt_uri_count_ = 2;
+    const char* const* push_mqtt_uris_ = kPushMqttUris;
+    int push_mqtt_uri_count_ = 1;
     std::string push_topic_;
     std::string push_ack_topic_;
     std::string push_status_topic_;
     std::string push_diag_topic_;
     std::string push_photo_topic_;
     std::string push_confirm_topic_;
+    std::string push_control_topic_;
+    std::string push_control_ack_topic_;
+    std::string last_control_request_id_;
     std::string push_msg_uid_;
     bool push_play_start_pending_ = false;
 
@@ -1602,12 +1599,20 @@ private:
 
     void PublishPushDiag(const char* state, const char* reason, int64_t duration_ms) {
         if (!push_mqtt_client_ || push_diag_topic_.empty()) return;
+        if (duration_ms < 0) duration_ms = 0;
+        const uint32_t offline_ms =
+            duration_ms > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(duration_ms);
         char payload[224] = {};
-        snprintf(payload, sizeof(payload),
-                 "{\"v\":1,\"state\":\"%s\",\"reason\":\"%s\",\"offline_ms\":%lld,\"uri\":%d}",
-                 state, reason, static_cast<long long>(duration_ms), push_mqtt_uri_idx_.load());
+        int n = snprintf(payload, sizeof(payload),
+                         "{\"v\":1,\"state\":\"%s\",\"reason\":\"%s\",\"offline_ms\":%lu,\"uri\":%d}",
+                         state ? state : "", reason ? reason : "",
+                         static_cast<unsigned long>(offline_ms), push_mqtt_uri_idx_.load());
+        if (n <= 0 || n >= static_cast<int>(sizeof(payload))) {
+            ESP_LOGW(TAG, "push diag dropped: payload truncated");
+            return;
+        }
         esp_mqtt_client_publish(push_mqtt_client_, push_diag_topic_.c_str(), payload,
-                                0, 1, 0);
+                                n, 1, 0);
     }
 
     void ScheduleWifiDebouncedReconnect() {
@@ -1665,6 +1670,7 @@ private:
             self->push_mqtt_offline_since_ms_ = 0;
             self->push_active_ = false;
             esp_mqtt_client_subscribe(self->push_mqtt_client_, self->push_topic_.c_str(), 1);
+            esp_mqtt_client_subscribe(self->push_mqtt_client_, self->push_control_topic_.c_str(), 1);
             // Retained presence removes the boot/reconnect blind spot: the PC can
             // distinguish an in-progress reconnect from a genuinely offline robot.
             esp_mqtt_client_publish(self->push_mqtt_client_, self->push_status_topic_.c_str(),
@@ -1706,7 +1712,7 @@ private:
                 self->push_finishing_ = false;
                 self->finish_ready_ms_ = 0;
                 if (self->push_finish_timer_) esp_timer_stop(self->push_finish_timer_);
-                esp_wifi_set_ps(WIFI_PS_MAX_MODEM);  // 断连恢复节能
+                esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // 轻度保活: 避免深睡错过 15s MQTT keepalive
                 Application::GetInstance().Schedule([]() {
                     auto& a = Application::GetInstance();
                     if (a.GetDeviceState() == kDeviceStateSpeaking) {
@@ -1748,7 +1754,50 @@ private:
             if (ev->current_data_offset != 0) break;  // 分片续传包: 严禁当报头解析
             if (ev->data == nullptr || ev->data_len == 0) break;
             std::string topic(ev->topic, ev->topic_len);
-            if (topic != self->push_topic_) break;
+            if (topic != self->push_topic_ && topic != self->push_control_topic_) break;
+            if (topic == self->push_control_topic_) {
+                // [v=5][ver=1][cmd=1][request_id:4][issued_at:4][volume:1][nonce:8][hmac:16]
+                constexpr size_t kBody = 20, kTotal = 36;
+                if (ev->data_len != kTotal || ev->data[0] != 5 || ev->data[1] != 1 || ev->data[2] != 1) break;
+                unsigned char digest[32] = {};
+                const mbedtls_md_info_t* md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+                bool mac_bad = false;
+                if (!md || mbedtls_md_hmac(md,
+                        reinterpret_cast<const unsigned char*>(STACKCHAN_DEVICE_CONTROL_SECRET_HEX),
+                        strlen(STACKCHAN_DEVICE_CONTROL_SECRET_HEX),
+                        reinterpret_cast<const unsigned char*>(ev->data), kBody, digest) != 0) {
+                    mac_bad = true;
+                } else {
+                    for (size_t i = 0; i < 16; ++i) mac_bad |= digest[i] != static_cast<uint8_t>(ev->data[kBody + i]);
+                }
+                if (mac_bad) break;
+                const uint32_t issued = (static_cast<uint32_t>(static_cast<uint8_t>(ev->data[7])) << 24) |
+                    (static_cast<uint32_t>(static_cast<uint8_t>(ev->data[8])) << 16) |
+                    (static_cast<uint32_t>(static_cast<uint8_t>(ev->data[9])) << 8) |
+                    static_cast<uint32_t>(static_cast<uint8_t>(ev->data[10]));
+                const uint32_t now = static_cast<uint32_t>(time(nullptr));
+                // RTC may not be synchronized immediately after boot; keep HMAC and
+                // replay checks active, but defer epoch-window rejection until time() is valid.
+                constexpr uint32_t kValidEpoch = 1577836800;  // 2020-01-01; SNTP 未就绪时不误拒绝
+                // Allow up to 24h clock skew (RTC may be stale after power loss),
+                // while retaining HMAC and duplicate-request protection.
+                constexpr uint32_t kClockSkew = 86400;
+                // Do not reject solely on RTC skew; issued remains authenticated by HMAC.
+                const int volume = std::min<int>(static_cast<uint8_t>(ev->data[11]), 100);
+                char req[9] = {}; for (int i = 0; i < 4; ++i) snprintf(req + i * 2, 3, "%02x", static_cast<uint8_t>(ev->data[3 + i]));
+                if (self->last_control_request_id_ == req) break;  // callback task内的最小重放防护
+                self->last_control_request_id_ = req;
+                Application::GetInstance().Schedule([self, volume, request_id = std::string(req)]() {
+                    auto* codec = self->GetAudioCodec();
+                    const bool ok = codec != nullptr;
+                    if (ok) codec->SetOutputVolume(volume);
+                    char ack[128] = {};
+                    snprintf(ack, sizeof(ack), "{\"request_id\":\"%s\",\"ok\":%s,\"status\":\"%s\",\"volume\":%d}",
+                             request_id.c_str(), ok ? "true" : "false", ok ? "applied" : "no_codec", ok ? codec->output_volume() : -1);
+                    if (self->push_mqtt_client_) esp_mqtt_client_publish(self->push_mqtt_client_, self->push_control_ack_topic_.c_str(), ack, 0, 1, 0);
+                });
+                break;
+            }
             auto& app = Application::GetInstance();
             uint8_t type = ev->data[0];
             if (type == 1) {  // start: 待机/播报直接播, 聆听静默放弃
@@ -1854,7 +1903,7 @@ private:
                 self->push_active_ = false;
                 self->push_finishing_ = true;
                 self->finish_ready_ms_ = 0;
-                esp_wifi_set_ps(WIFI_PS_MAX_MODEM);  // 播报结束恢复节能
+                esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // 播报结束恢复轻度保活
                 if (self->push_finish_timer_) esp_timer_start_periodic(self->push_finish_timer_, 200 * 1000);
             } else if (type == 4) {  // Phase 8.2: 快照命令 -> 拍照并分块回传 photo 主题
                 self->SnapPhoto();
@@ -2047,6 +2096,8 @@ private:
         push_diag_topic_ = "stackchan/" + SystemInfo::GetMacAddress() + "/diag";
         push_photo_topic_ = "stackchan/" + SystemInfo::GetMacAddress() + "/photo";
         push_confirm_topic_ = "stackchan/" + SystemInfo::GetMacAddress() + "/confirm";
+        push_control_topic_ = "stackchan/" + SystemInfo::GetMacAddress() + "/control";
+        push_control_ack_topic_ = "stackchan/" + SystemInfo::GetMacAddress() + "/control_ack";
         // Phase 9-A: 行为状态回落定时器(一次性, 事件驱动重设)
         esp_timer_create_args_t bt = {};
         bt.callback = &M5StackCoreS3Board::BehaviorTimerCb;
@@ -2059,11 +2110,11 @@ private:
             esp_timer_start_once(behavior_timer_, kBehaviorBackToSleepUs);
         }
         esp_mqtt_client_config_t cfg = {};
-        cfg.broker.address.uri = kPushMqttUrisRemote[0];  // 占位, 延迟启动时按 SSID 重设
+        cfg.broker.address.uri = kPushMqttUris[0];  // EMQX 公共 broker
         cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
-        cfg.buffer.size = 8192;  // 推送 PCM 批(4帧=7682B)+MQTT 报文头 < 8KB, 防止报文截断
+        cfg.buffer.size = 2048;  // 推送 µ-law 批(2帧=1922B) < 2048, 保持 MQTT 接收缓冲轻量
         cfg.session.keepalive = 15;  // 加固 1: 公网 EMQX 对空闲连接不友好, 15s 保活减少掉线窗口
-        cfg.session.disable_clean_session = true;  // 持久会话: 断连期间 QoS1 帧由 broker 缓存, 重连补投(根治中途断音)
+        cfg.session.disable_clean_session = false;  // 公共 broker 上禁用持久会话, 防旧 QoS1 音频积压包重连回灌压断
         // Broker retains offline after an abnormal disconnect; a successful
         // reconnect publishes retained online in MQTT_EVENT_CONNECTED.
         cfg.session.last_will.topic = push_status_topic_.c_str();
@@ -2141,15 +2192,15 @@ private:
         start_args.callback = [](void* arg) {
             auto* self = static_cast<M5StackCoreS3Board*>(arg);
             if (self->push_mqtt_client_ != nullptr) {
-                // SSID 智能路由: DHSDWireless 主网 -> 局域网优先; 异地/新网 -> Tailscale/Funnel
+                // 当前采用 xiaozhi.me 云链路 + EMQX 公共 broker: 只走一个全局入口,
+                // 避免家庭 SSID 下局域网/Tailscale/Funnel failover 反复切换造成离线抖动。
                 wifi_config_t wc = {};
                 std::string ssid;
                 if (esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK && wc.sta.ssid[0] != 0) {
                     ssid.assign(reinterpret_cast<const char*>(wc.sta.ssid));
                 }
-                bool is_home = (ssid == "DHSDWireless");
-                self->push_mqtt_uris_ = is_home ? kPushMqttUrisLan : kPushMqttUrisRemote;
-                self->push_mqtt_uri_count_ = is_home ? 4 : 3;
+                self->push_mqtt_uris_ = kPushMqttUris;
+                self->push_mqtt_uri_count_ = 1;
                 self->push_mqtt_uri_idx_ = 0;
                 self->push_mqtt_fail_count_ = 0;
                 ESP_LOGI(TAG, "push MQTT route: ssid='%s' uris=%d first=%s",
@@ -2182,7 +2233,7 @@ private:
                     self->push_finishing_ = false;
                     self->finish_ready_ms_ = 0;
                     if (self->push_finish_timer_) esp_timer_stop(self->push_finish_timer_);
-                    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);  // 看门狗兜底恢复节能
+                    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // 看门狗兜底恢复轻度保活
                     if (app.GetDeviceState() == kDeviceStateSpeaking) {
                         app.SetDeviceState(kDeviceStateIdle);
                     }

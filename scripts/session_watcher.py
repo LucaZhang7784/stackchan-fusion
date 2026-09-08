@@ -37,7 +37,7 @@ STATE_FILE = ROOT / "gateway" / "state" / "session_watcher.state.json"
 LOG_FILE = ROOT / "gateway" / "state" / "session_watcher.log"
 CODE_SESSIONS = Path.home() / ".codex" / "sessions"
 
-IDLE_MS = 25000          # 文件超过 25s 无写入视为轮次完成(防长工具调用误报)
+IDLE_MS = 5 * 60 * 1000  # 文件超过 5min 无写入才视为轮次完成; watcher 只做兜底, 防长构建/刷机中间进度误播
 POLL_S = 5               # 扫描间隔(秒)
 HOOK_ACTIVE_WINDOW_S = 15 * 60  # 会话 15 分钟内有钩子上报 -> 视为钩子正常, 监听器跳过
 _UUID_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")

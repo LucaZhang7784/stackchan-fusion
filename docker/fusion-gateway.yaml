@@ -9,7 +9,7 @@ remote:
   url: http://localhost:8010/mcp
   transport_type: streamable-http
   headers:
-    Authorization: Bearer ${STACKCHAN_AUTH_TOKEN}
+    Authorization: Bearer REMOVED_EXPOSED_TOKEN
 metadata:
   category: local
   tags:

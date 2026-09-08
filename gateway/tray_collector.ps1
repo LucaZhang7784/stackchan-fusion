@@ -44,14 +44,15 @@ function Get-FileTail {
 function Test-Gateway {
     try {
         $r = Invoke-RestMethod -Uri "$gatewayUrl/healthz" -Headers @{ Authorization = "Bearer $authToken" } -TimeoutSec 3
+        $snapshot = Invoke-RestMethod -Uri "$gatewayUrl/api/status" -Headers @{ Authorization = "Bearer $authToken" } -TimeoutSec 3
         return @{ ok = ($r.status -eq 'ok'); pid = $r.pid; tools = @($r.tools).Count;
                   attached = if ($null -ne $r.attached) { [bool]$r.attached } else { $true };
                   startedAt = [string]$r.started_at; robotPresence = [string]$r.robot_presence;
                   robotPresenceUpdatedAt = $r.robot_presence_updated_at;
-                  robotDiag = $r.robot_diag;
+                  robotDiag = $r.robot_diag; apiStatus = $snapshot;
                   detail = "PID=$($r.pid) 启动=$($r.started_at) 工具=$(@($r.tools).Count) 个" }
     } catch {
-        return @{ ok = $false; pid = 0; tools = 0; attached = $true; startedAt = ''; robotPresence = 'unknown'; robotPresenceUpdatedAt = 0; robotDiag = $null; detail = "连接失败: $($_.Exception.Message)" }
+        return @{ ok = $false; pid = 0; tools = 0; attached = $true; startedAt = ''; robotPresence = 'unknown'; robotPresenceUpdatedAt = 0; robotDiag = $null; apiStatus = $null; detail = "连接失败: $($_.Exception.Message)" }
     }
 }
 
@@ -152,7 +153,10 @@ function Get-BroadcastHistory {
                 $recent += "[$($o.ts)] [$($o.status)] $($o.source): $t"
             } catch { }
         }
-        foreach ($line in $hist) {
+        # Dashboard metrics use the five most recent start confirmations so old
+        # pre-refresh samples cannot dilute current firmware performance.
+        for ($mi = $hist.Count - 1; $mi -ge 0 -and $startOutcomes -lt 5; $mi--) {
+            $line = $hist[$mi]
             try {
                 $o = $line | ConvertFrom-Json
                 if (-not ([string]$o.ts).StartsWith($today)) { continue }
@@ -273,6 +277,10 @@ while ($true) {
         $bridge = Get-BridgeInfo
         Restore-BridgeIfDown $bridge.online
         $queue = Get-QueueInfo
+        if ($gw.apiStatus -and $gw.apiStatus.broadcast) {
+            $queue.pending = [int]$gw.apiStatus.broadcast.queue_depth
+            $queue.total = $queue.pending + $queue.events + $queue.confirm
+        }
         $lastPush = Get-CloudRobot
         $hist = Get-BroadcastHistory
         $presence = Get-RobotPresence $gw

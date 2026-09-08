@@ -3,7 +3,7 @@
 - **审计身份**：代码审计员（只读，未修改任何项目代码）
 - **审计日期**：2026-08-07
 - **审计对象**：codex thread `019fd205-2729-7cc3-be50-8299e6fb0d51` 及本机落盘文件
-- **取证来源**：`${STACKCHAN_ROOT}\fusion.firmware.0731\`、`~/.codex/`、`~/.claude/`、gateway 实时日志、`hooks.json`、`config.toml`
+- **取证来源**：`D:\ProcessCenter\StackChan\fusion.firmware.0731\`、`~/.codex/`、`~/.claude/`、gateway 实时日志、`hooks.json`、`config.toml`
 - **实施方**：codex（审计员不下场改代码，只验收证据）
 
 ---
@@ -121,7 +121,7 @@ Claude Code (CLI / VS Code 插件)
 
 #### 1.1 改 `install_claude_hooks.ps1`
 
-**文件**：`${STACKCHAN_ROOT}\fusion.firmware.0731\agents\install_claude_hooks.ps1`
+**文件**：`D:\ProcessCenter\StackChan\fusion.firmware.0731\agents\install_claude_hooks.ps1`
 
 **改动点**：target 从 `settings.json` 改为 `settings.local.json`（ccswitch 不动 local 文件，Claude Code 同样读取）。
 
@@ -136,7 +136,7 @@ if (-not (Test-Path $python)) {
     $python = (Get-Command python -ErrorAction SilentlyContinue).Source
     if (-not $python) { throw "找不到 Python" }
 }
-$hookScript = "${STACKCHAN_ROOT}\fusion.firmware.0731\agents\claude_hook.py"
+$hookScript = "D:\ProcessCenter\StackChan\fusion.firmware.0731\agents\claude_hook.py"
 $hookCmd = "`"" + ($python -replace '\\', '/') + "`" `"" + ($hookScript -replace '\\', '/') + "`""
 
 # 读取现有 settings.local.json (保留 permissions / enableAllProjectMcpServers 等已有键)
@@ -174,7 +174,7 @@ Write-Host "hooks installed -> $settingsPath (backup: $backup)"
 #### 1.2 立即执行
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "${STACKCHAN_ROOT}\fusion.firmware.0731\agents\install_claude_hooks.ps1"
+powershell -ExecutionPolicy Bypass -File "D:\ProcessCenter\StackChan\fusion.firmware.0731\agents\install_claude_hooks.ps1"
 ```
 
 #### 1.3 验收证据（codex 回传）
@@ -241,7 +241,7 @@ Write-Host "提示: hooks 已写入 settings.local.json, ccswitch 覆盖 setting
 
 #### 3.1 `agents_core.py` — `query()` 对 vscode 显式拒发
 
-**文件**：`${STACKCHAN_ROOT}\fusion.firmware.0731\gateway\agents_core.py`
+**文件**：`D:\ProcessCenter\StackChan\fusion.firmware.0731\gateway\agents_core.py`
 
 **问题行**：`query()`（line 378）在 `spawn_visible` 失败时回退 `run_agent`，对 vscode 会执行 `code -r "<task文本>"`（把任务文本当文件打开）。
 
@@ -288,7 +288,7 @@ def query(agent: str, task: str, timeout_s: int = 120, visible: bool = True) -> 
 
 #### 4.1 `claude_hook.py` — SessionEnd 强制兜底 done
 
-**文件**：`${STACKCHAN_ROOT}\fusion.firmware.0731\agents\claude_hook.py`
+**文件**：`D:\ProcessCenter\StackChan\fusion.firmware.0731\agents\claude_hook.py`
 
 **问题**：Response stalled mid-stream 时 Stop 可能不触发或 transcript 为空，导致 done 永不上报。
 
@@ -310,7 +310,7 @@ def query(agent: str, task: str, timeout_s: int = 120, visible: bool = True) -> 
 
 #### 4.2 `vscode_hook.py` — PowerShell profile 手动上报函数
 
-**文件**：`${STACKCHAN_ROOT}\fusion.firmware.0731\agents\vscode_hook.py`
+**文件**：`D:\ProcessCenter\StackChan\fusion.firmware.0731\agents\vscode_hook.py`
 
 当前 `install_tasks` 已存在，补一个 `--install-profile` 把上报命令注入 PowerShell profile（仅对显式 `--install-profile` 时启用，避免污染所有终端）：
 
@@ -359,19 +359,19 @@ def install_profile() -> str:
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 ${STACKCHAN_ROOT}/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 ${STACKCHAN_ROOT}/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "PermissionRequest": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 ${STACKCHAN_ROOT}/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 ${STACKCHAN_ROOT}/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan", "timeout": 10 } ] }
     ],
     "SessionEnd": [
-      { "hooks": [ { "timeout": 3, "type": "command", "command": "C:/WINDOWS/py.EXE -3 ${STACKCHAN_ROOT}/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan" } ] }
+      { "hooks": [ { "timeout": 3, "type": "command", "command": "C:/WINDOWS/py.EXE -3 D:/ProcessCenter/StackChan/fusion.firmware.0731/agents/codex_hook.py", "statusMessage": "Notifying StackChan" } ] }
     ]
   }
 }

@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$dir = "${STACKCHAN_ROOT}\server"
+$dir = "D:\ProcessCenter\StackChan\server"
 $py = (Get-Command python).Source
 
 $existing = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |

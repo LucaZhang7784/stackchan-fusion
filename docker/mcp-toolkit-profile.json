@@ -21,7 +21,7 @@
             "url": "http://localhost:8010/mcp",
             "transport_type": "streamable-http",
             "headers": {
-              "Authorization": "Bearer REMOVED_EXPOSED_TOKEN"
+              "Authorization": ""
             }
           },
           "metadata": {

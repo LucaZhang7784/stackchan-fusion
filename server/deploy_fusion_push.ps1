@@ -9,7 +9,11 @@ $composeBase = Join-Path $StackChanRoot 'server\docker-compose.yml'
 $composeFusion = Join-Path $fusion 'server-patch\docker-compose.fusion.yml'
 $dataDir = Join-Path $StackChanRoot 'server\data'
 $configYaml = Join-Path $dataDir '.config.yaml'
-$fusionSecret = 'REMOVED_EXPOSED_TOKEN'
+$fusionSecret = $env:FUSION_GATEWAY_TOKEN
+if ([string]::IsNullOrWhiteSpace($fusionSecret) -or $fusionSecret.Trim() -in @('REMOVED_EXPOSED_TOKEN', 'YOUR_GATEWAY_TOKEN')) {
+    throw 'Set a private FUSION_GATEWAY_TOKEN before deployment; empty and placeholder values are forbidden.'
+}
+$fusionSecret = $fusionSecret.Trim()
 
 # 0) 确认补丁文件存在
 foreach ($f in @("$fusion\server-patch\core\fusion_push.py", "$fusion\server-patch\core\connection.py", "$fusion\server-patch\core\http_server.py")) {

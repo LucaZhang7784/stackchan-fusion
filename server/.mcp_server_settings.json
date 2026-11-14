@@ -4,7 +4,7 @@
       "url": "http://100.69.221.25:8010/mcp",
       "transport": "streamable-http",
       "headers": {
-        "Authorization": "Bearer REMOVED_EXPOSED_TOKEN"
+        "Authorization": ""
       },
       "des": "StackChan 融合网关: codex_query/claude_query/robot_pending/robot_status/robot_say/ws_probe"
     }

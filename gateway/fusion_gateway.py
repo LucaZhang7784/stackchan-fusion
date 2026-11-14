@@ -60,10 +60,10 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = {
     "ota_url": "https://dahuilucaaaaa.tail61f3fa.ts.net/xiaozhi/ota/",
     "robot_mac": "68:ee:8f:d7:3f:14",
-    "endpoint_health_url": "http://127.0.0.1:8004/mcp_endpoint/health?key=REMOVED_EXPOSED_HEALTH_KEY",
+    "endpoint_health_url": os.environ.get("FUSION_ENDPOINT_HEALTH_URL", ""),
     "docker_container": "xiaozhi-esp32-server",
     "docker_log_lookback_minutes": 120,
-    "auth_token": "REMOVED_EXPOSED_TOKEN",
+    "auth_token": os.environ.get("FUSION_GATEWAY_TOKEN", ""),
     "allow_codex": True,
     "allow_claude": True,
     "codex_cli": "codex",
@@ -1685,7 +1685,19 @@ def agent_confirm(agent: str, answer: str) -> str:
 
 
 # ---------------------------------------------------------------- HTTP 模式
+def _require_http_auth_token(config: dict) -> str:
+    """Require a private HTTP credential; never accept a public cleanup marker."""
+    token = str(os.environ.get("FUSION_GATEWAY_TOKEN") or config.get("auth_token") or "").strip()
+    if not token or token in {"REMOVED_EXPOSED_TOKEN", "YOUR_GATEWAY_TOKEN"}:
+        raise RuntimeError(
+            "HTTP authentication requires a private FUSION_GATEWAY_TOKEN "
+            "or auth_token in local config.json; empty and placeholder values are forbidden."
+        )
+    return token
+
+
 def build_http_app():
+    token = _require_http_auth_token(CFG)
     from starlette.applications import Starlette
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
@@ -1870,17 +1882,15 @@ def build_http_app():
     # 关键: 传播内层 MCP app 的 lifespan, 否则会话管理器任务组不会启动
     app.router.lifespan_context = mcp_app.router.lifespan_context
 
-    token = str(CFG.get("auth_token") or "")
-    if token:
-        class AuthMiddleware(BaseHTTPMiddleware):
-            async def dispatch(self, request, call_next):
-                if request.url.path == "/healthz":
-                    return await call_next(request)
-                if request.headers.get("Authorization") != f"Bearer {token}":
-                    return JSONResponse({"error": "unauthorized"}, status_code=401)
+    class AuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            if request.url.path == "/healthz":
                 return await call_next(request)
+            if request.headers.get("Authorization") != f"Bearer {token}":
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+            return await call_next(request)
 
-        app.add_middleware(AuthMiddleware)
+    app.add_middleware(AuthMiddleware)
     return app
 
 
